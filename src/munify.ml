@@ -367,7 +367,7 @@ let is_lift env sigma c =
 
 (** Given a named_context returns a list with its variables *)
 let id_substitution nc =
-  List.fold_right (fun d s -> mkVar (CND.get_id d) :: s) nc []
+  List.map (fun d -> mkVar (CND.get_id d)) nc
 
 (** Pre: isVar v1 *)
 let _is_same_var sigma v1 v2 = isVar sigma v2 && (destVar sigma v1 = destVar sigma v2)
@@ -382,6 +382,7 @@ let _is_same_evar sigma i1 ev2 =
 
 let isVarOrRel sigma c = isVar sigma c || isRel sigma c
 
+(* BLUME: this is the part that checks if the arguments are HOPU compliant *)
 let is_variable_subs sigma = List.for_all (fun c -> isVar sigma c || isRel sigma c)
 
 let is_variable_args sigma = List.for_all (fun c -> isVar sigma c || isRel sigma c)
@@ -491,6 +492,7 @@ let try_unfolding sigma ts env t =
    with ?e instead of the other way round, and this is in fact tried by the
    unification algorithm.
 *)
+(* BLUME: Inversion du renommage + pruning *)
 let invert map sigma ctx (t : EConstr.t) subs args ev' =
   let sargs = subs @ args in
   let in_subs j = j < List.length ctx in
@@ -557,6 +559,7 @@ let some_or_prop o =
   | Some tm -> tm
 
 (** Removes the positions in the list, and all dependent elements. *)
+(* BLUME: applies prune + sanitizes *)
 let remove sigma l pos =
   let l = List.rev l in
   let rec remove' i (l: named_declaration list) vs =
@@ -1435,6 +1438,7 @@ module struct
 
   and is_stuck env sigma (hd, args) =
     let (hd, args) = evar_apprec P.flags.open_ts env sigma (try_unfolding sigma P.flags.open_ts env hd, args) in
+    let module X = Termops in
     let rec is_unnamed (hd, args) = match kind sigma hd with
       | (Var _|Construct _|Ind _|Const _|Prod _|Sort _|Int _|Float _|String _|Array _) -> false
       | (Case _|Fix _|CoFix _|Meta _|Rel _)-> true
@@ -1447,6 +1451,7 @@ module struct
 
   and meta_inst dir options conv_t env (ev, subs as evsubs, args) (h, args' as t) sigma dbg =
     let subs = Evd.expand_existential sigma evsubs in
+    (* BLUME: here is the call to the HOPU check *)
     if must_inst dir ev && is_variable_subs sigma subs && is_variable_args sigma args then
       begin
         try
