@@ -48,3 +48,77 @@ let rec is_restricted t = match C.kind t with
   | Proj _ -> false
   | Int _ | Float _ | String _ | Array _ -> false
 
+
+(* In the pure Functions as Constructors algorithm, there are three
+   restrictions on the system:
+   - The term restriction: Every argument tᵢ in an evar's spine [?X t₁...tₙ]
+     satisfies that every node is either a function symbol (in the sense of
+     a fixed signature in the simple lmabda calculus) or a bound variable,
+     and every leaf is a bound variable.
+   - The local restriction: Given any evar instance [?X t₁...tₙ] in the
+     system and i≠j, we have that tᵢ ⊈ tⱼ.
+   - The global restriction: Given any two occurences [?X t₁...tₙ] and
+     [?Y u₁...uₘ] in the same equation of a system, we have tᵢ ⊄ uᵢ.
+
+   In our case, since we are not working in a pure system of equations
+   (i.e there are other rules/heuristics that do not commute with the
+   HOPU algorithm), we should be only concerned on the subset of these
+   conditions that allows the Meta-Inst rule to work (~~ be sound + locally
+   complete in some restricted sense ?)
+   It is my (unproven) understanding that these rules need only be enforced
+   on the head r.h.s mvar in the rule. Precisely, given an equaition of the
+   form [?X t₁ ... tₙ = s], one must check that:
+   - Term restriction: for the argumnets of ?X only.
+   - Local restriction: for the arguments of ?X only.
+   - Global retrcition: for each occurence [?Y u₁ ... uₘ] in s,
+     only check that tᵢ ⊄ uⱼ.
+     --> to my understanding, this only guarantees the completeness of the
+     pruning procedure
+*)
+
+
+module X = struct
+      type t = C.constr
+      let compare = C.compare
+end
+module TMap = CMap.Make(X)
+
+module CND = Context.Named.Declaration
+
+let (let*) a f = match a with None -> None | Some a -> f a
+let return x = Some x
+let fail() = None
+
+let check_term_restriction args =
+  not @@ List.exists (fun t -> not (is_restricted t)) args
+
+type evar_argument =
+  | Evarg_Rel of int
+  | Evarg_Name of Names.Id.t
+
+let lift_evar_argument i = function
+  | Evarg_Name _ as x -> x
+  | Evarg_Rel j -> Evarg_Rel (j + i)
+
+let check_local_restriction subst ctx args =
+  let check_subst acc t decl =
+    let* map = acc in
+    match TMap.find_opt t map with
+    | None ->
+       let var = Evarg_Name (CND.get_id decl) in
+       return (TMap.add t var map)
+    | Some _ -> fail()
+  in let check_args i acc t =
+    let* map = acc in
+    match TMap.find_opt t map with
+    | None -> return @@ TMap.add t (Evarg_Rel i) map
+    | Some _ -> fail()
+  in
+  let map = List.fold_left2 check_subst (return TMap.empty) subst ctx in
+  CList.fold_left_i check_args 1 map args
+
+
+(* Same interface as the original invert *)
+let invert prune_map sigma ctx t subs args ev =
+  failwith "Yepp"
+  (* TODO: handle de brujin things *)
