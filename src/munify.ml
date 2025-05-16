@@ -98,7 +98,7 @@ let default_options = ref {
     inst_aggressive = true;
     inst_super_aggressive = false;
     inst_try_solving_eqn = false;
-    inst_use_fcu = false;
+    inst_use_fcu = true;
     use_hash = false
 }
 
@@ -507,6 +507,8 @@ let try_unfolding sigma ts env t =
 *)
 (* BLUME: Inversion du renommage + pruning *)
 let invert map sigma ctx (t : EConstr.t) subs args ev' =
+  if (uses_fcu()) then Fcuops.invert map sigma ctx t subs args ev' else
+
   let sargs = subs @ args in
   let in_subs j = j < List.length ctx in
   let rmap = ref map in

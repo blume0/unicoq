@@ -143,6 +143,16 @@ let invert prune_map sigma ctx t subs args x =
   let exception MyExit in
   let prune_map = ref prune_map in
 
+  let ppt c = Constr.debug_print (EConstr.Unsafe.to_constr c) in
+  begin let open Pp in
+  Format.printf "BLUME: REVERTING ?%a" pp_with @@
+    (Option.default (Names.Id.of_string("U"^(string_of_int (Evar.repr x)))) (Evd.evar_ident x sigma)
+     |> Names.Id.print)
+    ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs
+    ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args
+    ++ (str " ?R? ") ++ (ppt t) ++ (str"\n")
+  end;
+
   let subsargs = subs@args in
   if not@@ check_term_restriction sigma subsargs then fail() else
   let* evar_args_map = check_local_restriction sigma subs ctx args in
