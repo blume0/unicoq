@@ -10,6 +10,8 @@ src/logger.mli
 src/logger.ml
 src/munify.mli
 src/munify.ml
+src/fcuops.ml
+src/fcuops.mli
 src/unitactics.mlg
 src/unicoq.mlpack
 theories/Unicoq.v

@@ -11,10 +11,10 @@
    choices that can be made                                              *)
 (*************************************************************************)
 
-
+open EConstr
 module C = Constr
 
-let is_constructor_like_head t = match C.kind t with
+let is_constructor_like_head sigma t = match kind sigma t with
   | Rel _ | Var _ | Ind _ -> true
   | Construct _ -> true (* TODO: but it is invertible *)
   | Const _ -> true (* TODO: ignoring delta-reductions *)
@@ -31,16 +31,16 @@ let is_constructor_like_head t = match C.kind t with
    I think I need to think more about the essence/the points of the FCU
    restriction in the simple λ-calculus to see how it extends to the
    inductive part of the CIC.                                             *)
-let rec is_restricted t = match C.kind t with
+let rec is_restricted sigma t = match kind sigma t with
   | Rel _ | Var _ | Sort _ -> true
   | Meta _ | Evar _ -> false
   | Lambda _ | LetIn _ | Prod _ -> false
-  | Cast (t, _, _ (* TODO: ? *)) -> is_restricted t
+  | Cast (t, _, _ (* TODO: ? *)) -> is_restricted sigma t
   | App (t, args) ->
      (* TODO: see if the invariants that t is non-applicative and |args| > 0
         is always respected                                               *)
-     not@@ Array.exists is_restricted args
-     && is_constructor_like_head t
+     not@@ Array.exists (is_restricted sigma) args
+     && is_constructor_like_head sigma t
   | Const _ | Ind _ | Construct _ -> false
   | Case _ -> false
       (* TODO: maybe there is something to do with this ? *)
@@ -85,40 +85,117 @@ module TMap = CMap.Make(X)
 
 module CND = Context.Named.Declaration
 
-let (let*) a f = match a with None -> None | Some a -> f a
+let (let*) = Option.bind
 let return x = Some x
 let fail() = None
 
-let check_term_restriction args =
-  not @@ List.exists (fun t -> not (is_restricted t)) args
+let check_term_restriction sigma args =
+  not @@ List.exists (fun t -> not (is_restricted sigma t)) args
 
 type evar_argument =
   | Evarg_Rel of int
   | Evarg_Name of Names.Id.t
 
-let lift_evar_argument i = function
-  | Evarg_Name _ as x -> x
-  | Evarg_Rel j -> Evarg_Rel (j + i)
+(* let lift_evar_argument i = function *)
+(*   | Evarg_Name _ as x -> x *)
+(*   | Evarg_Rel j -> Evarg_Rel (j + i) *)
 
-let check_local_restriction subst ctx args =
+let check_local_restriction sigma subst ctx args =
   let check_subst acc t decl =
     let* map = acc in
-    match TMap.find_opt t map with
+    match TMap.find_opt (to_constr sigma t) map with
     | None ->
        let var = Evarg_Name (CND.get_id decl) in
-       return (TMap.add t var map)
+       return (TMap.add (to_constr sigma t) var map)
     | Some _ -> fail()
   in let check_args i acc t =
     let* map = acc in
-    match TMap.find_opt t map with
-    | None -> return @@ TMap.add t (Evarg_Rel i) map
+    match TMap.find_opt (to_constr sigma t) map with
+    | None -> return @@ TMap.add (to_constr sigma t) (Evarg_Rel i) map
     | Some _ -> fail()
   in
   let map = List.fold_left2 check_subst (return TMap.empty) subst ctx in
   CList.fold_left_i check_args 1 map args
 
 
+(* precondition: is_restricted sigma t *)
+let rec unlift_restricted sigma i t =
+  match EConstr.kind sigma t with
+  | Rel j ->
+     (* TODO: make sure DeBrujin indices start at 1 *)
+     if j > i then return (mkRel (j-i))
+     else fail()
+  | _ ->
+     let exception MyExit in
+     begin try
+         return @@
+         map_with_binders
+            sigma failwith
+            (fun _ t -> match unlift_restricted sigma i t with
+                        | Some x -> x | None -> raise MyExit)
+            "term was not restricted" t
+     with MyExit -> fail() end
+
 (* Same interface as the original invert *)
-let invert prune_map sigma ctx t subs args ev =
-  failwith "Yepp"
-  (* TODO: handle de brujin things *)
+(* Inverting
+       ?x[subs] args = t where (sigma ⊧ ?x[ctx]) *)
+let invert prune_map sigma ctx t subs args x =
+  let exception MyExit in
+  let prune_map = ref prune_map in
+
+  let subsargs = subs@args in
+  if not@@ check_term_restriction sigma subsargs then fail() else
+  let* evar_args_map = check_local_restriction sigma subs ctx args in
+
+
+  let rec invert' inside_evar t i =
+    if is_restricted sigma t then
+      let* et = unlift_restricted sigma i t in
+      let t = to_constr sigma et in
+      match TMap.find_opt t evar_args_map with
+        (* TODO: check indice stuff *)
+      | Some (Evarg_Rel j) -> return (mkRel (j+i))
+      | Some (Evarg_Name n) -> return (mkVar n)
+      | None ->
+         (* Here the term does not occur as an argument, but we can still
+            try to invert its subterms. *)
+         begin
+           try return (map_with_binders sigma succ (fun i t ->
+                           match invert' inside_evar t i with
+                           | Some t -> t
+                           | None -> raise MyExit) i et)
+           with MyExit -> fail()
+         end
+
+    else match kind sigma t with
+    | Evar (y, _) when Evar.equal x y -> fail()
+    | Evar (y, y_args) ->
+      begin
+        let y_args = Evd.expand_existential sigma (y, y_args) in
+        let invert_or_prune pos u =
+          match invert' true u i with
+          | Some u -> u
+          | None ->
+             if not inside_evar then begin
+                 prune_map := Evar.Map.update y
+                   (fun l -> match l with
+                             | Some l -> Some (pos::l)
+                             | None -> Some [pos]) !prune_map;
+                 u
+             end else raise MyExit
+        in
+        try return (mkLEvar sigma (y, List.mapi invert_or_prune y_args))
+        with MyExit -> fail()
+      end
+
+    | _ ->
+       try return (map_with_binders sigma succ (fun i c ->
+                       match invert' inside_evar c i with
+                       | Some c -> c
+                       | None -> raise MyExit) i t)
+       with MyExit -> fail()
+  in
+  let* t_minus_one = invert' false t 0 in
+  return (!prune_map, t_minus_one)
+
+

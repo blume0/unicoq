@@ -88,6 +88,7 @@ type options = {
     inst_aggressive : bool;
     inst_super_aggressive : bool;
     inst_try_solving_eqn : bool;
+    inst_use_fcu : bool;
     use_hash : bool
 }
 
@@ -97,6 +98,7 @@ let default_options = ref {
     inst_aggressive = true;
     inst_super_aggressive = false;
     inst_try_solving_eqn = false;
+    inst_use_fcu = false;
     use_hash = false
 }
 
@@ -115,6 +117,10 @@ let set_super_aggressive b =
     default_options :=
       {!default_options with inst_super_aggressive = b}
 
+let uses_fcu () = !default_options.inst_use_fcu
+let set_fcu_use b = default_options :=
+                      {!default_options with inst_use_fcu = b}
+
 let _ = Goptions.declare_bool_option {
   Goptions.optdepr = None;
   Goptions.optstage = Interp;
@@ -131,6 +137,13 @@ let _ = Goptions.declare_bool_option {
   Goptions.optwrite = set_super_aggressive;
 }
 
+let _ = Goptions.declare_bool_option {
+  Goptions.optdepr = None;
+  Goptions.optstage = Interp;
+  Goptions.optkey = ["Unicoq"; "Blume"; "FCU"];
+  Goptions.optread = uses_fcu;
+  Goptions.optwrite = set_fcu_use
+}
 
 let get_solving_eqn () = !default_options.inst_try_solving_eqn
 let set_solving_eqn b =
@@ -1451,7 +1464,12 @@ module struct
   and meta_inst dir options conv_t env (ev, subs as evsubs, args) (h, args' as t) sigma dbg =
     let subs = Evd.expand_existential sigma evsubs in
     (* BLUME: here is the call to the HOPU check *)
-    if must_inst dir ev && is_variable_subs sigma subs && is_variable_args sigma args then
+    let in_problem_class =
+      if (uses_fcu()) then
+        is_variable_subs sigma subs && is_variable_args sigma args
+      else Fcuops.(check_term_restriction sigma (subs@args))
+    in
+    if must_inst dir ev &&  in_problem_class then
       begin
         try
           let module P' = (struct
