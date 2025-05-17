@@ -13,6 +13,20 @@
 
 open EConstr
 module C = Constr
+module CND = Context.Named.Declaration
+
+let (let*) = Option.bind
+let return x = Some x
+let fail() = None
+
+module X = struct
+      type t = C.constr
+      let compare = C.compare
+end
+module TMap = CMap.Make(X)
+
+
+
 
 let is_constructor_like_head sigma t = match kind sigma t with
   | Rel _ | Var _ | Ind _ -> true
@@ -32,12 +46,11 @@ let is_constructor_like_head sigma t = match kind sigma t with
    restriction in the simple λ-calculus to see how it extends to the
    inductive part of the CIC.                                             *)
 let rec is_restricted sigma t = match kind sigma t with
-  | Var x -> Format.printf "(becasue of the var %a)" Pp.pp_with (Names.Id.print x); true
-  | Rel _  | Sort _ -> Format.printf "(because of ~var)";true
+  | Rel _  | Var _ | Sort _ -> true
   | Meta _ | Evar _ -> false
   | Lambda _ | LetIn _ | Prod _ -> false
   | Cast (t, _, _ (* TODO: ? *)) -> is_restricted sigma t
-  | App (t, args) -> Format.printf "(because of ~App)";
+  | App (t, args) ->
      (* TODO: see if the invariants that t is non-applicative and |args| > 0
         is always respected                                               *)
      not (Array.exists (fun a -> not@@ is_restricted sigma a) args)
@@ -49,11 +62,6 @@ let rec is_restricted sigma t = match kind sigma t with
   | Proj _ -> false
   | Int _ | Float _ | String _ | Array _ -> false
 
-let is_restricted sigma t =
-  Format.printf "BLUME: %a" Pp.pp_with @@ Constr.debug_print (EConstr.Unsafe.to_constr t);
-  let res = is_restricted sigma t in
-  Format.printf " %a restricted.@." Pp.pp_with Pp.(str(if res then "INDEED" else "NOT"));
-  res
 
 (* In the pure Functions as Constructors algorithm, there are three
    restrictions on the system:
@@ -79,21 +87,8 @@ let is_restricted sigma t =
    - Global retrcition: for each occurence [?Y u₁ ... uₘ] in s,
      only check that tᵢ ⊄ uⱼ.
      --> to my understanding, this only guarantees the completeness of the
-     pruning procedure
-*)
+     pruning procedure                                                            *)
 
-
-module X = struct
-      type t = C.constr
-      let compare = C.compare
-end
-module TMap = CMap.Make(X)
-
-module CND = Context.Named.Declaration
-
-let (let*) = Option.bind
-let return x = Some x
-let fail() = None
 
 let check_term_restriction sigma args =
   not @@ List.exists (fun t -> not (is_restricted sigma t)) args
@@ -102,41 +97,37 @@ type evar_argument =
   | Evarg_Rel of int
   | Evarg_Name of Names.Id.t
 
-(* let lift_evar_argument i = function *)
-(*   | Evarg_Name _ as x -> x *)
-(*   | Evarg_Rel j -> Evarg_Rel (j + i) *)
+(* In addition to the above description of the local-restriction condition, there are two
+   additional relaxings controlled by the 'strict' argument in the following implementation,
+   to make it correspond to the way the HOPU variable restriction check is actually conducted
+   in Ziliani-Sozeau's Unicoq implementation:
+   1- Non-restricted-term argument are just ignored
+   2- Non-unique arguments are allowed at this point, are provoke a failure to apply the rule
+      only in the case they are actually needed.
 
+      TODO: Just realized I am not doing the local restriction check at all here i am just
+      checking for syntactical equality not structural occurence am stupid
+*)
 let check_local_restriction ?(strict=false) sigma subst ctx args =
   let check_subst acc t decl =
     let* map = acc in
     if not@@ is_restricted sigma t then if strict then fail() else acc else
-    match TMap.find_opt (to_constr sigma t) map with
+    let t = to_constr sigma t in
+    match TMap.find_opt t map with
     | None ->
        let var = Evarg_Name (CND.get_id decl) in
-       return (TMap.add (to_constr sigma t) var map)
-    | Some _ -> fail()
+       return (TMap.add t (var, true) map)
+    | Some ((c, _)) -> if strict then fail() else return (TMap.add t (c,false) map)
   in let check_args i acc t =
     let* map = acc in
     if not@@ is_restricted sigma t then if strict then fail() else acc else
-    match TMap.find_opt (to_constr sigma t) map with
-    | None -> return @@ TMap.add (to_constr sigma t) (Evarg_Rel i) map
-    | Some _ -> fail()
-  in
-  let check_args i acc t =
-    let open Pp in
-    Format.printf "BLUME: CHECK ARG %a" pp_with
-      (Constr.debug_print (EConstr.Unsafe.to_constr t) ++ str"... ");
-    let res = check_args i acc t in
-    Format.printf "and found %a.@." pp_with (if res=None then str"None" else str"Some(_).");
-    res
+    let t = to_constr sigma t in
+    match TMap.find_opt t map with
+    | None -> return @@ TMap.add t (Evarg_Rel i, true) map
+    | Some (c,_) -> if strict then fail() else return (TMap.add t (c,false) map)
   in
   let map = List.fold_left2 check_subst (return TMap.empty) subst ctx in
-  Format.printf "BLUME: REVERT and subs is %a" Pp.pp_with
-    Pp.(if map=None then str" fail. " else str" good. ");
-  let res = CList.fold_left_i check_args 1 map args in
-  Format.printf "and args is %a@." Pp.pp_with
-    Pp.(if res=None then str" fail." else str" good.");
-  res
+  CList.fold_left_i check_args 1 map args
 
 
 (* precondition: is_restricted sigma t *)
@@ -164,29 +155,29 @@ let invert prune_map sigma ctx t subs args x =
   let exception MyExit in
   let prune_map = ref prune_map in
 
-  let ppt c = Constr.debug_print (EConstr.Unsafe.to_constr c) in
-  begin let open Pp in
-  Format.printf "BLUME: REVERTING ?%a" pp_with @@
-    (Option.default (Names.Id.of_string("U"^(string_of_int (Evar.repr x)))) (Evd.evar_ident x sigma)
-     |> Names.Id.print)
-    ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs
-    ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args
-    ++ (str " ?R? ") ++ (ppt t) ++ (str"\n")
-  end;
+  (* DEBUG: let ppt c = Constr.debug_print (EConstr.Unsafe.to_constr c) in *)
+  (* begin let open Pp in *)
+  (* Format.printf "BLUME: REVERTING ?%a" pp_with @@ *)
+  (*   (Option.default (Names.Id.of_string("U"^(string_of_int (Evar.repr x)))) (Evd.evar_ident x sigma) *)
+  (*    |> Names.Id.print) *)
+  (*   ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs *)
+  (*   ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args *)
+  (*   ++ (str " ?R? ") ++ (ppt t) ++ (str"\n") *)
+  (* end; *)
 
   (* let subsargs = subs@args in *)
   (* if not@@ check_term_restriction sigma subsargs then fail() else *)
   let* evar_args_map = check_local_restriction sigma subs ctx args in
 
-  Format.printf "BLUME: REVERTING got past map construction@.";
   let rec invert' inside_evar t i =
     if is_restricted sigma t then
       let* et = unlift_restricted sigma i t in
       let t = to_constr sigma et in
       match TMap.find_opt t evar_args_map with
         (* TODO: check indice stuff *)
-      | Some (Evarg_Rel j) -> return (mkRel (j+i))
-      | Some (Evarg_Name n) -> return (mkVar n)
+      | Some (Evarg_Rel j, true) -> return (mkRel (j+i))
+      | Some (Evarg_Name n, true) -> return (mkVar n)
+      | Some _ -> fail()
       | None ->
          (* Here the term does not occur as an argument, but we can still
             try to invert its subterms. *)

@@ -98,7 +98,7 @@ let default_options = ref {
     inst_aggressive = true;
     inst_super_aggressive = false;
     inst_try_solving_eqn = false;
-    inst_use_fcu = true;
+    inst_use_fcu = false;
     use_hash = false
 }
 
@@ -393,7 +393,12 @@ let _is_same_evar sigma i1 ev2 =
   | Evar (i2, _) -> i1 = i2
   | _ -> false
 
-let isVarOrRel sigma c = isVar sigma c || isRel sigma c
+let isVarOrRel sigma c =
+  let res = isVar sigma c || isRel sigma c in
+  let _ = Format.printf "ZILIANI: IS VAR %a ? %b@."
+    Pp.pp_with (Constr.debug_print (EConstr.Unsafe.to_constr c))
+    res
+  in res
 
 (* BLUME: this is the part that checks if the arguments are HOPU compliant *)
 let is_variable_subs sigma = List.for_all (fun c -> isVar sigma c || isRel sigma c)
@@ -510,16 +515,6 @@ let invert map sigma ctx (t : EConstr.t) subs args ev' =
   if (uses_fcu()) then Fcuops.invert map sigma ctx t subs args ev' else
 
   let sargs = subs @ args in
-
-  let ppt c = Constr.debug_print (EConstr.Unsafe.to_constr c) in
-  begin let open Pp in
-  Format.printf "ZILIANI: REVERTING ?%a" pp_with @@
-    (Option.default (Names.Id.of_string("U"^(string_of_int (Evar.repr ev')))) (Evd.evar_ident ev' sigma)
-     |> Names.Id.print)
-    ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs
-    ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args
-    ++ (str " ?R? ") ++ (ppt t) ++ (str"\n")
-  end;
 
   let in_subs j = j < List.length ctx in
   let rmap = ref map in
@@ -1478,23 +1473,10 @@ module struct
     let subs = Evd.expand_existential sigma evsubs in
     (* BLUME: here is the call to the HOPU check *)
     let in_problem_class =
-      if (uses_fcu()) then
+      if (not@@ uses_fcu()) then
         is_variable_subs sigma subs && is_variable_args sigma args
       else Fcuops.(check_term_restriction sigma (subs@args))
     in
-    let ppt c = Constr.debug_print (EConstr.Unsafe.to_constr c) in
-    let _ = Format.printf "BLUME: TRYING META-INST OF %a...@." Pp.pp_with @@ Pp.(++) Pp.(
-      str"(" ++ (bool in_problem_class) ++ str"," ++ (bool@@ must_inst dir ev) ++ str")"
-      ++ str"?" ++
-      (Option.default (Names.Id.of_string("U"^(string_of_int (Evar.repr ev))))
-                      (Evd.evar_ident ev sigma)
-       |> Names.Id.print)
-      ++ str"[" ++ prlist_with_sep (fun _ -> str"; ") ppt subs ++ str"]"
-      ++ spc() ++ prlist_with_sep spc ppt args ++ spc()
-      ++ (match conv_t with CONV -> str"?=?" | CUMUL -> str"?<?") ++ spc())
-      (mkApp (h, Array.of_list args') |> ppt)
-    in
-    let res =
     if must_inst dir ev &&  in_problem_class then
       begin
         try
@@ -1504,7 +1486,6 @@ module struct
             let winst = Both
             let match_evars = P.match_evars
           end : Params) in
-          Format.printf "STATRING INST MODULE...@.";
           let module U' = (val unif (module P') : Unifier) in
           report (log_eq_spine env "Meta-Inst" conv_t (mkEvar evsubs, args) t (dbg, sigma) &&=
                   let module I' = Inst(U') in
@@ -1512,11 +1493,6 @@ module struct
         with CannotPrune -> report (dbg, ES.UnifFailure (sigma, PE.NotSameHead))
       end
     else (dbg, ES.UnifFailure (sigma, PE.NotSameHead))
-    in
-    let _ = Format.printf "%a@." Pp.pp_with
-              @@ Pp.str (match (snd res) with Success _ -> "SUCCEEDED." |_->"FAILED")
-    in
-    res
 
   and meta_deldeps dir options conv_t env (ev, subs as evsubs, args) (h, args' as t) sigma dbg =
     if !options.inst_aggressive && must_inst dir ev then
