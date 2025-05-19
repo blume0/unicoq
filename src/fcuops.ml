@@ -48,17 +48,18 @@ let is_constructor_like_head sigma t = match kind sigma t with
    I think I need to think more about the essence/the points of the FCU
    restriction in the simple λ-calculus to see how it extends to the
    inductive part of the CIC.                                             *)
-let rec is_restricted sigma t = match kind sigma t with
-  | Rel _  | Var _ | Sort _ -> true
+let rec is_restricted sigma ?(i=0) t = match kind sigma t with
+  | Var n  -> true
+  | Rel j -> j > i
   | Meta _ | Evar _ -> false
   | Lambda _ | LetIn _ | Prod _ -> false
   | Cast (t, _, _ (* TODO: ? *)) -> is_restricted sigma t
   | App (t, args) ->
      (* TODO: see if the invariants that t is non-applicative and |args| > 0
         is always respected                                               *)
-     not (Array.exists (fun a -> not@@ is_restricted sigma a) args)
+     not (Array.exists (fun a -> not@@ is_restricted ~i sigma a) args)
      && is_constructor_like_head sigma t
-  | Const _ | Ind _ | Construct _ -> false
+  | Const _ | Ind _ | Construct _ | Sort _ -> false
   | Case _ -> false
       (* TODO: maybe there is something to do with this ? *)
   | Fix _ | CoFix _ -> false
@@ -107,9 +108,6 @@ type evar_argument =
    1- Non-restricted-term argument are just ignored
    2- Non-unique arguments are allowed at this point, are provoke a failure to apply the rule
       only in the case they are actually needed.
-
-      TODO: Just realized I am not doing the local restriction check at all here i am just
-      checking for syntactical equality not structural occurence am stupid
 *)
 let check_local_restriction ?(strict=false) sigma subst ctx args =
   let allargs = subst@args in
@@ -170,42 +168,46 @@ let invert prune_map sigma ctx t subs args x =
 
   (*DEBUG*)
   let ppt c = Constr.debug_print (EConstr.Unsafe.to_constr c) in
-  begin let open Pp in
-  Format.printf "BLUME: REVERTING ?%a@." pp_with @@
-    (Option.default (Names.Id.of_string("U"^(string_of_int (Evar.repr x)))) (Evd.evar_ident x sigma)
-     |> Names.Id.print)
-    ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs
-    ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args
-    ++ (str " ?R? ") ++ (ppt t)
-  end;
+  (* begin let open Pp in *)
+  (* Format.printf "BLUME: REVERTING ?%a@." pp_with @@ *)
+  (*   (Option.default (Names.Id.of_string("U"^(string_of_int (Evar.repr x)))) (Evd.evar_ident x sigma) *)
+  (*    |> Names.Id.print) *)
+  (*   ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs *)
+  (*   ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args *)
+  (*   ++ (str " ?R? ") ++ (ppt t) *)
+  (* end; *)
+  let _ = ppt in
 
   let subsargs = subs@args in
   if not@@ check_term_restriction sigma subsargs then fail() else
   let* evar_args_map = check_local_restriction sigma subs ctx (List.rev args) in
 
-  Format.printf "BLUME: MAP IS %a@." Pp.pp_with
-  (TMap.fold_left (fun t a acc ->
-       let open Pp in let hehe = match a with
-                      | Some (Evarg_Name(n)) -> Names.Id.print n
-                      | Some (Evarg_Rel(n)) -> int n
-                      | None -> str"BAD"
-                      in acc ++ (C.debug_print t ++ str":" ++ hehe) ++ str", "
-     ) evar_args_map (Pp.str""));
+  (* Format.printf "BLUME: MAP IS %a@." Pp.pp_with *)
+  (* (TMap.fold_left (fun t a acc -> *)
+  (*      let open Pp in let hehe = match a with *)
+  (*                     | Some (Evarg_Name(n)) -> Names.Id.print n *)
+  (*                     | Some (Evarg_Rel(n)) -> int n *)
+  (*                     | None -> str"BAD" *)
+  (*                     in acc ++ (C.debug_print t ++ str":" ++ hehe) ++ str", " *)
+  (*    ) evar_args_map (Pp.str"")); *)
 
   let rec invert' inside_evar t i =
-    if is_restricted sigma t then
-      let _ = Format.printf "INVERTING RESTRICTED %a@." Pp.pp_with (ppt t) in
+    (* let _ = Format.printf "INVERT' OF %a %d@." Pp.pp_with (ppt t) i in *)
+    if is_restricted sigma ~i t then
+      (* let _ = Format.printf "INVERTING RESTRICTED(%d) %a@." i Pp.pp_with (ppt t) in *)
       let* et = unlift_restricted sigma i t in
       let t = to_constr sigma et in
       match TMap.find_opt t evar_args_map with
         (* TODO: check indice stuff *)
       | Some (Some(Evarg_Rel j)) -> return (mkRel (j+i))
       | Some (Some(Evarg_Name n)) -> return (mkVar n)
-      | Some None -> fail()
+      | Some None -> raise MyExit
       | None ->
          (* Here the term does not occur as an argument, but we can still
             try to invert its subterms. *)
          begin
+           match C.kind t with (* if we're a bound variable, is over *)
+           | Rel _ | Var _ -> fail() | _ ->
            try return (map_with_binders sigma succ (fun i t ->
                            match invert' inside_evar t i with
                            | Some t -> t
@@ -241,12 +243,12 @@ let invert prune_map sigma ctx t subs args x =
                        | None -> raise MyExit) i t)
        with MyExit -> fail()
   in
-  let* t_minus_one = invert' false t 0 in
-  (*DEBUG*)
-  begin let open Pp in
-    Format.printf "BLUME: SUCCESSFULLY REVERTED AS %a@." pp_with
-    (ppt t_minus_one)
-  end;
+  let* t_minus_one = try invert' false t 0 with MyExit -> fail() in
+  (* (\*DEBUG*\) *)
+  (* begin let open Pp in *)
+  (*   Format.printf "BLUME: SUCCESSFULLY REVERTED AS %a@." pp_with *)
+  (*   (ppt t_minus_one) *)
+  (* end; *)
   return (!prune_map, t_minus_one)
 
 
