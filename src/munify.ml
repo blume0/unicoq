@@ -98,7 +98,7 @@ let default_options = ref {
     inst_aggressive = true;
     inst_super_aggressive = false;
     inst_try_solving_eqn = false;
-    inst_use_fcu = false;
+    inst_use_fcu = true;
     use_hash = false
 }
 
@@ -393,12 +393,7 @@ let _is_same_evar sigma i1 ev2 =
   | Evar (i2, _) -> i1 = i2
   | _ -> false
 
-let isVarOrRel sigma c =
-  let res = isVar sigma c || isRel sigma c in
-  let _ = Format.printf "ZILIANI: IS VAR %a ? %b@."
-    Pp.pp_with (Constr.debug_print (EConstr.Unsafe.to_constr c))
-    res
-  in res
+let isVarOrRel sigma c = isVar sigma c || isRel sigma c
 
 (* BLUME: this is the part that checks if the arguments are HOPU compliant *)
 let is_variable_subs sigma = List.for_all (fun c -> isVar sigma c || isRel sigma c)

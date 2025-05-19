@@ -25,6 +25,9 @@ module X = struct
 end
 module TMap = CMap.Make(X)
 
+let rec xfold f acc t =
+  let acc = f acc t in
+  C.fold (fun acc t -> xfold f acc t) acc t
 
 
 
@@ -109,22 +112,32 @@ type evar_argument =
       checking for syntactical equality not structural occurence am stupid
 *)
 let check_local_restriction ?(strict=false) sigma subst ctx args =
+  let allargs = subst@args in
+  let no_subterm_occ t =
+    let occs = xfold
+      (fun occs t ->
+        occs +
+        CList.count
+          (fun t' -> C.compare t (to_constr sigma t') = 0) allargs)
+      0 t
+    in
+    let _ = assert (occs <> 0) in occs = 1
+  in
   let check_subst acc t decl =
     let* map = acc in
     if not@@ is_restricted sigma t then if strict then fail() else acc else
     let t = to_constr sigma t in
-    match TMap.find_opt t map with
-    | None ->
-       let var = Evarg_Name (CND.get_id decl) in
-       return (TMap.add t (var, true) map)
-    | Some ((c, _)) -> if strict then fail() else return (TMap.add t (c,false) map)
+    if no_subterm_occ t then
+      let var = Evarg_Name (CND.get_id decl) in
+      return (TMap.add t (Some var) map)
+    else if strict then fail() else return (TMap.add t None map)
   in let check_args i acc t =
     let* map = acc in
     if not@@ is_restricted sigma t then if strict then fail() else acc else
     let t = to_constr sigma t in
-    match TMap.find_opt t map with
-    | None -> return @@ TMap.add t (Evarg_Rel i, true) map
-    | Some (c,_) -> if strict then fail() else return (TMap.add t (c,false) map)
+    if no_subterm_occ t then
+      return (TMap.add t (Some(Evarg_Rel i)) map)
+    else if strict then fail() else return (TMap.add t None map)
   in
   let map = List.fold_left2 check_subst (return TMap.empty) subst ctx in
   CList.fold_left_i check_args 1 map args
@@ -155,29 +168,40 @@ let invert prune_map sigma ctx t subs args x =
   let exception MyExit in
   let prune_map = ref prune_map in
 
-  (* DEBUG: let ppt c = Constr.debug_print (EConstr.Unsafe.to_constr c) in *)
-  (* begin let open Pp in *)
-  (* Format.printf "BLUME: REVERTING ?%a" pp_with @@ *)
-  (*   (Option.default (Names.Id.of_string("U"^(string_of_int (Evar.repr x)))) (Evd.evar_ident x sigma) *)
-  (*    |> Names.Id.print) *)
-  (*   ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs *)
-  (*   ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args *)
-  (*   ++ (str " ?R? ") ++ (ppt t) ++ (str"\n") *)
-  (* end; *)
+  (*DEBUG*)
+  let ppt c = Constr.debug_print (EConstr.Unsafe.to_constr c) in
+  begin let open Pp in
+  Format.printf "BLUME: REVERTING ?%a@." pp_with @@
+    (Option.default (Names.Id.of_string("U"^(string_of_int (Evar.repr x)))) (Evd.evar_ident x sigma)
+     |> Names.Id.print)
+    ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs
+    ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args
+    ++ (str " ?R? ") ++ (ppt t)
+  end;
 
-  (* let subsargs = subs@args in *)
-  (* if not@@ check_term_restriction sigma subsargs then fail() else *)
+  let subsargs = subs@args in
+  if not@@ check_term_restriction sigma subsargs then fail() else
   let* evar_args_map = check_local_restriction sigma subs ctx args in
+
+  Format.printf "BLUME: MAP IS %a@." Pp.pp_with
+  (TMap.fold_left (fun t a acc ->
+       let open Pp in let hehe = match a with
+                      | Some (Evarg_Name(n)) -> Names.Id.print n
+                      | Some (Evarg_Rel(n)) -> int n
+                      | None -> str"BAD"
+                      in acc ++ (C.debug_print t ++ str":" ++ hehe) ++ str", "
+     ) evar_args_map (Pp.str""));
 
   let rec invert' inside_evar t i =
     if is_restricted sigma t then
+      let _ = Format.printf "INVERTING RESTRICTED %a@." Pp.pp_with (ppt t) in
       let* et = unlift_restricted sigma i t in
       let t = to_constr sigma et in
       match TMap.find_opt t evar_args_map with
         (* TODO: check indice stuff *)
-      | Some (Evarg_Rel j, true) -> return (mkRel (j+i))
-      | Some (Evarg_Name n, true) -> return (mkVar n)
-      | Some _ -> fail()
+      | Some (Some(Evarg_Rel j)) -> return (mkRel (j+i))
+      | Some (Some(Evarg_Name n)) -> return (mkVar n)
+      | Some None -> fail()
       | None ->
          (* Here the term does not occur as an argument, but we can still
             try to invert its subterms. *)
@@ -218,6 +242,11 @@ let invert prune_map sigma ctx t subs args x =
        with MyExit -> fail()
   in
   let* t_minus_one = invert' false t 0 in
+  (*DEBUG*)
+  begin let open Pp in
+    Format.printf "BLUME: SUCCESSFULLY REVERTED AS %a@." pp_with
+    (ppt t_minus_one)
+  end;
   return (!prune_map, t_minus_one)
 
 
