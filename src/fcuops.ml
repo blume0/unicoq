@@ -181,7 +181,7 @@ let invert prune_map sigma ctx t subs args x =
 
   let subsargs = subs@args in
   if not@@ check_term_restriction sigma subsargs then fail() else
-  let* evar_args_map = check_local_restriction sigma subs ctx args in
+  let* evar_args_map = check_local_restriction sigma subs ctx (List.rev args) in
 
   Format.printf "BLUME: MAP IS %a@." Pp.pp_with
   (TMap.fold_left (fun t a acc ->
