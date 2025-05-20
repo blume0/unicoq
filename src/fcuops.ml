@@ -168,11 +168,13 @@ let invert prune_map sigma ctx t subs args x =
   let prune_map = ref prune_map in
 
   (*DEBUG*)
-  let ppt c = Constr.debug_print (EConstr.Unsafe.to_constr c) in
+  let ppe e =
+    Printer.pr_evar sigma (x, Evar.Map.find x (Evd.undefined_map sigma))
+  in
+  let ppt c = Printer.pr_econstr_env Environ.empty_env sigma c in
   begin let open Pp in
-  Format.printf "BLUME: REVERTING ?%a@." pp_with @@
-    (Option.default (Names.Id.of_string("U"^(string_of_int (Evar.repr x)))) (Evd.evar_ident x sigma)
-     |> Names.Id.print)
+  Format.printf "BLUME: REVERTING %a@." pp_with @@
+    ppe x
     ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs
     ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args
     ++ (str " ?R? ") ++ (ppt t)
