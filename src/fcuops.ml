@@ -29,7 +29,8 @@ let rec xfold f acc t =
   let acc = f acc t in
   C.fold (fun acc t -> xfold f acc t) acc t
 
-
+(* HACK to disable the local restriction check, comment this to enable it  *)
+(* let xfold f acc t = let _ = xfold in f acc t *)
 
 let is_constructor_like_head sigma t = match kind sigma t with
   | Rel _ | Var _ | Ind _ -> true
@@ -168,28 +169,19 @@ let invert prune_map sigma ctx t subs args x =
 
   (*DEBUG*)
   let ppt c = Constr.debug_print (EConstr.Unsafe.to_constr c) in
-  (* begin let open Pp in *)
-  (* Format.printf "BLUME: REVERTING ?%a@." pp_with @@ *)
-  (*   (Option.default (Names.Id.of_string("U"^(string_of_int (Evar.repr x)))) (Evd.evar_ident x sigma) *)
-  (*    |> Names.Id.print) *)
-  (*   ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs *)
-  (*   ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args *)
-  (*   ++ (str " ?R? ") ++ (ppt t) *)
-  (* end; *)
+  begin let open Pp in
+  Format.printf "BLUME: REVERTING ?%a@." pp_with @@
+    (Option.default (Names.Id.of_string("U"^(string_of_int (Evar.repr x)))) (Evd.evar_ident x sigma)
+     |> Names.Id.print)
+    ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs
+    ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args
+    ++ (str " ?R? ") ++ (ppt t)
+  end;
   let _ = ppt in
 
   let subsargs = subs@args in
   if not@@ check_term_restriction sigma subsargs then fail() else
   let* evar_args_map = check_local_restriction sigma subs ctx (List.rev args) in
-
-  (* Format.printf "BLUME: MAP IS %a@." Pp.pp_with *)
-  (* (TMap.fold_left (fun t a acc -> *)
-  (*      let open Pp in let hehe = match a with *)
-  (*                     | Some (Evarg_Name(n)) -> Names.Id.print n *)
-  (*                     | Some (Evarg_Rel(n)) -> int n *)
-  (*                     | None -> str"BAD" *)
-  (*                     in acc ++ (C.debug_print t ++ str":" ++ hehe) ++ str", " *)
-  (*    ) evar_args_map (Pp.str"")); *)
 
   let rec invert' inside_evar t i =
     (* let _ = Format.printf "INVERT' OF %a %d@." Pp.pp_with (ppt t) i in *)
@@ -244,11 +236,11 @@ let invert prune_map sigma ctx t subs args x =
        with MyExit -> fail()
   in
   let* t_minus_one = try invert' false t 0 with MyExit -> fail() in
-  (* (\*DEBUG*\) *)
-  (* begin let open Pp in *)
-  (*   Format.printf "BLUME: SUCCESSFULLY REVERTED AS %a@." pp_with *)
-  (*   (ppt t_minus_one) *)
-  (* end; *)
+  (*DEBUG*)
+  begin let open Pp in
+    Format.printf "BLUME: SUCCESSFULLY REVERTED AS %a@." pp_with
+    (ppt t_minus_one)
+  end;
   return (!prune_map, t_minus_one)
 
 
