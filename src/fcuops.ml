@@ -35,7 +35,12 @@ let rec xfold f acc t =
 let is_constructor_like_head sigma t = match kind sigma t with
   | Rel _ | Var _ | Ind _ -> true
   | Construct _ -> true (* TODO: but it is invertible *)
-  | Const _ -> true (* TODO: ignoring delta-reductions *)
+  | Const _ ->
+     (* (?X[f x] = f x) with (f := fun x => (x, x)) ∈ E
+        (?X:=fun e => e) is not an mgu
+        Example of incompatible solution: (?X:=fun e => (e.2, e.2)
+     *)
+     false
   | _ -> false
 
 
@@ -168,18 +173,18 @@ let invert prune_map sigma ctx t subs args x =
   let prune_map = ref prune_map in
 
   (*DEBUG*)
-  let ppe e =
-    Printer.pr_evar sigma (x, Evar.Map.find x (Evd.undefined_map sigma))
-  in
-  let ppt c = Printer.pr_econstr_env Environ.empty_env sigma c in
-  begin let open Pp in
-  Format.printf "BLUME: REVERTING %a@." pp_with @@
-    ppe x
-    ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs
-    ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args
-    ++ (str " ?R? ") ++ (ppt t)
-  end;
-  let _ = ppt in
+  (* let ppe e = *)
+  (*   Printer.pr_evar sigma (x, Evar.Map.find x (Evd.undefined_map sigma)) *)
+  (* in *)
+  (* let ppt c = Printer.pr_econstr_env Environ.empty_env sigma c in *)
+  (* begin let open Pp in *)
+  (* Format.printf "BLUME: REVERTING %a@." pp_with @@ *)
+  (*   ppe x *)
+  (*   ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs *)
+  (*   ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args *)
+  (*   ++ (str " ?R? ") ++ (ppt t) *)
+  (* end; *)
+  (* let _ = ppt in *)
 
   let subsargs = subs@args in
   if not@@ check_term_restriction sigma subsargs then fail() else
@@ -239,10 +244,10 @@ let invert prune_map sigma ctx t subs args x =
   in
   let* t_minus_one = try invert' false t 0 with MyExit -> fail() in
   (*DEBUG*)
-  begin let open Pp in
-    Format.printf "BLUME: SUCCESSFULLY REVERTED AS %a@." pp_with
-    (ppt t_minus_one)
-  end;
+  (* begin let open Pp in *)
+  (*   Format.printf "BLUME: SUCCESSFULLY REVERTED AS %a@." pp_with *)
+  (*   (ppt t_minus_one) *)
+  (* end; *)
   return (!prune_map, t_minus_one)
 
 

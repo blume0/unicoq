@@ -505,22 +505,11 @@ let try_unfolding sigma ts env t =
    with ?e instead of the other way round, and this is in fact tried by the
    unification algorithm.
 *)
-(* BLUME: Inversion du renommage + pruning *)
 let invert map sigma ctx (t : EConstr.t) subs args ev' =
   if (uses_fcu()) then Fcuops.invert map sigma ctx t subs args ev' else
 
   let sargs = subs @ args in
 
-  (*DEBUG*)
-  let ppt c = Constr.debug_print (EConstr.Unsafe.to_constr c) in
-  begin let open Pp in
-  Format.printf "ZILIANI: REVERTING ?%a@." pp_with @@
-    (Option.default (Names.Id.of_string("U"^(string_of_int (Evar.repr ev')))) (Evd.evar_ident ev' sigma)
-     |> Names.Id.print)
-    ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs
-    ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args
-    ++ (str " ?R? ") ++ (ppt t)
-  end;
 
   let in_subs j = j < List.length ctx in
   let rmap = ref map in
@@ -547,9 +536,6 @@ let invert map sigma ctx (t : EConstr.t) subs args ev' =
       | Evar (ev, evargs) ->
 	begin
           let evargs = Evd.expand_existential sigma (ev, evargs) in
-          Format.printf "ANOTHER EVAR @.";
-          Format.printf "ARGS : %a@." Pp.pp_with
-      (List.fold_left (fun a e -> a++Pp.str","++ppt e)(Pp.str"") evargs);
 	  let f (j : int) (c : EConstr.t) =
             match invert' true c i with
               | Some c' -> c'
