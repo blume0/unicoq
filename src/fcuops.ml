@@ -29,10 +29,20 @@ let rec xfold f acc t =
   let acc = f acc t in
   C.fold (fun acc t -> xfold f acc t) acc t
 
+
+
+
+let canonize sigma t =
+  let t = to_constr ~abort_on_undefined_evars:false sigma t in
+  Termoccs.hash t
+
+let _ = canonize
+
 (* HACK to disable the local restriction check, comment this to enable it  *)
 (* let xfold f acc t = let _ = xfold in f acc t *)
 
-let is_constructor_like_head sigma t = match kind sigma t with
+let is_constructor_like_head (kind : _ -> _ C.kind_of_term) t =
+  match kind t with
   | Rel _ | Var _ | Ind _ -> true
   | Construct _ -> true (* TODO: but it is invertible *)
   | Const _ ->
@@ -54,17 +64,18 @@ let is_constructor_like_head sigma t = match kind sigma t with
    I think I need to think more about the essence/the points of the FCU
    restriction in the simple λ-calculus to see how it extends to the
    inductive part of the CIC.                                             *)
-let rec is_restricted sigma ?(i=0) t = match kind sigma t with
+let rec is_restricted (kind : _ -> _ C.kind_of_term) ?(i=0) t =
+match kind t with
   | Var n  -> true
   | Rel j -> j > i
   | Meta _ | Evar _ -> false
   | Lambda _ | LetIn _ | Prod _ -> false
-  | Cast (t, _, _ (* TODO: ? *)) -> is_restricted sigma t
+  | Cast (t, _, _ (* TODO: ? *)) -> is_restricted kind t
   | App (t, args) ->
      (* TODO: see if the invariants that t is non-applicative and |args| > 0
         is always respected                                               *)
-     not (Array.exists (fun a -> not@@ is_restricted ~i sigma a) args)
-     && is_constructor_like_head sigma t
+     not (Array.exists (fun a -> not@@ is_restricted ~i kind a) args)
+     && is_constructor_like_head kind t
   | Const _ | Ind _ | Construct _ | Sort _ -> false
   | Case _ -> false
       (* TODO: maybe there is something to do with this ? *)
@@ -115,52 +126,50 @@ type evar_argument =
    2- Non-unique arguments are allowed at this point, are provoke a failure to apply the rule
       only in the case they are actually needed.
 *)
-let check_local_restriction ?(strict=false) sigma subst ctx args =
+let check_local_restriction ?(strict=false) kind xfold init_map add compare subst ctx args =
   let allargs = subst@args in
   let no_subterm_occ t =
     let occs = xfold
       (fun occs t ->
         occs +
         CList.count
-          (fun t' -> C.compare t (to_constr sigma t') = 0) allargs)
+          (fun t' -> compare t t' = 0) allargs)
       0 t
     in
     let _ = assert (occs <> 0) in occs = 1
   in
   let check_subst acc t decl =
     let* map = acc in
-    if not@@ is_restricted sigma t then if strict then fail() else acc else
-    let t = to_constr sigma t in
+    if not@@ is_restricted kind t then if strict then fail() else acc else
     if no_subterm_occ t then
       let var = Evarg_Name (CND.get_id decl) in
-      return (TMap.add t (Some var) map)
-    else if strict then fail() else return (TMap.add t None map)
+      return (add t (Some var) map)
+    else if strict then fail() else return (add t None map)
   in let check_args i acc t =
     let* map = acc in
-    if not@@ is_restricted sigma t then if strict then fail() else acc else
-    let t = to_constr sigma t in
+    if not@@ is_restricted kind t then if strict then fail() else acc else
     if no_subterm_occ t then
-      return (TMap.add t (Some(Evarg_Rel i)) map)
-    else if strict then fail() else return (TMap.add t None map)
+      return (add t (Some(Evarg_Rel i)) map)
+    else if strict then fail() else return (add t None map)
   in
-  let map = List.fold_left2 check_subst (return TMap.empty) subst ctx in
+  let map = List.fold_left2 check_subst (return init_map) subst ctx in
   CList.fold_left_i check_args 1 map args
 
 
 (* precondition: is_restricted sigma t *)
-let rec unlift_restricted sigma i t =
-  match EConstr.kind sigma t with
+let rec unlift_restricted i t =
+  match C.kind t with
   | Rel j ->
      (* TODO: make sure DeBrujin indices start at 1 *)
-     if j > i then return (mkRel (j-i))
+     if j > i then return (C.mkRel (j-i))
      else fail()
   | _ ->
      let exception MyExit in
      begin try
          return @@
-         map_with_binders
-            sigma failwith
-            (fun _ t -> match unlift_restricted sigma i t with
+         C.map_with_binders
+            failwith
+            (fun _ t -> match unlift_restricted i t with
                         | Some x -> x | None -> raise MyExit)
             "term was not restricted" t
      with MyExit -> fail() end
@@ -186,17 +195,22 @@ let invert prune_map sigma ctx t subs args x =
   (* end; *)
   (* let _ = ppt in *)
 
+  let subs = List.map (canonize sigma) subs in
+  let args = List.map (canonize sigma) args in
+
   let subsargs = subs@args in
-  if not@@ check_term_restriction sigma subsargs then fail() else
-  let* evar_args_map = check_local_restriction sigma subs ctx (List.rev args) in
+  if not@@ check_term_restriction Termoccs.kind subsargs then fail() else
+
+  let* evar_args_map =
+    let open Termoccs in
+    check_local_restriction kind xfold Map.empty Map.add compare subs ctx (List.rev args) in
 
   let rec invert' inside_evar t i =
     (* let _ = Format.printf "INVERT' OF %a %d@." Pp.pp_with (ppt t) i in *)
-    if is_restricted sigma ~i t then
+    if is_restricted Termoccs.kind ~i t then
       (* let _ = Format.printf "INVERTING RESTRICTED(%d) %a@." i Pp.pp_with (ppt t) in *)
-      let* et = unlift_restricted sigma i t in
-      let t = to_constr sigma et in
-      match TMap.find_opt t evar_args_map with
+      let* et = unlift_restricted i (Termoccs.to_constr t) in
+      match Termoccs.Map.find_opt t evar_args_map with
         (* TODO: check indice stuff *)
       | Some (Some(Evarg_Rel j)) -> return (mkRel (j+i))
       | Some (Some(Evarg_Name n)) -> return (mkVar n)
@@ -205,7 +219,7 @@ let invert prune_map sigma ctx t subs args x =
          (* Here the term does not occur as an argument, but we can still
             try to invert its subterms. *)
          begin
-           match C.kind t with (* if we're a bound variable, is over *)
+           match Termoccs.kind t with (* if we're a bound variable, is over *)
            | Rel _ | Var _ -> fail() | _ ->
            try return (map_with_binders sigma succ (fun i t ->
                            match invert' inside_evar t i with

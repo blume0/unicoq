@@ -172,4 +172,103 @@ module Order = struct
      type nonrec t = t
      let compare = compare
 end
+module Set = CSet.Make(Order)
 module Map = CMap.Make(Order)
+
+
+let fold_invert f acc = function
+  | NoInvert -> acc
+  | CaseInvert {indices} ->
+    Array.fold_left f acc indices
+
+let fold f acc c = match kind c with
+  | (Rel _ | Meta _ | Var _   | Sort _ | Const _ | Ind _
+    | Construct _ | Int _ | Float _ | String _) -> acc
+  | Cast (c,_,t) -> f (f acc c) t
+  | Prod (_,t,c) -> f (f acc t) c
+  | Lambda (_,t,c) -> f (f acc t) c
+  | LetIn (_,b,t,c) -> f (f (f acc b) t) c
+  | App (c,l) -> Array.fold_left f (f acc c) l
+  | Proj (_p,_r,c) -> f acc c
+  | Evar (_,l) -> SList.Skip.fold f acc l
+  | Case (_,_,pms,((_,p),_),iv,c,bl) ->
+    Array.fold_left (fun acc (_, b) -> f acc b) (f (fold_invert f (f (Array.fold_left f acc pms) p) iv) c) bl
+  | Fix (_,(_lna,tl,bl)) ->
+    CArray.fold_left2 (fun acc t b -> f (f acc t) b) acc tl bl
+  | CoFix (_,(_lna,tl,bl)) ->
+    CArray.fold_left2 (fun acc t b -> f (f acc t) b) acc tl bl
+  | Array(_u,t,def,ty) ->
+    f (f (Array.fold_left f acc t) def) ty
+
+let rec xfold f acc c =
+  let acc = f acc c in
+  fold (fun acc c -> xfold f acc c) acc c
+
+
+let map_with_binders g f l c0 =
+  let kind' = kind in
+  let open Constr in
+  let module Array = CArray in
+  let iterate = Util.iterate in
+  match kind' c0 with
+  | (Rel _ | Meta _ | Var _   | Sort _ | Const _ | Ind _
+    | Construct _ | Int _ | Float _ | String _) -> to_constr c0
+  | Cast (c, k, t) ->
+    let c' = f l c in
+    let t' = f l t in
+    if c' == c && t' == t then to_constr c0
+    else mkCast (c', k, t')
+  | Prod (na, t, c) ->
+    let t' = f l t in
+    let c' = f (g l) c in
+    if t' == t && c' == c then to_constr c0
+    else mkProd (na, to_constr t', to_constr c')
+  | Lambda (na, t, c) ->
+    let t' = f l t in
+    let c' = f (g l) c in
+    if t' == t && c' == c then to_constr c0
+    else mkLambda (na, to_constr t', to_constr c')
+  | LetIn (na, b, t, c) ->
+    let b' = f l b in
+    let t' = f l t in
+    let c' = f (g l) c in
+    if b' == b && t' == t && c' == c then to_constr c0
+    else mkLetIn (na, b', t', c')
+  | App (c, al) ->
+    let c' = f l c in
+    let al' = CArray.Fun1.Smart.map f l al in
+    if c' == c && al' == al then c0
+    else mkApp (c', al')
+  | Proj (p, r, t) ->
+    let t' = f l t in
+    if t' == t then c0
+    else mkProj (p, r, t')
+  | Evar (e, al) ->
+    let al' = SList.Smart.map (fun c -> f l c) al in
+    if al' == al then c0
+    else mkEvar (e, al')
+  | Case (ci, u, pms, p, iv, c, bl) ->
+    let pms' = CArray.Fun1.Smart.map f l pms in
+    let p' = map_return_predicate_with_binders g f l p in
+    let iv' = map_invert (f l) iv in
+    let c' = f l c in
+    let bl' = map_branches_with_binders g f l bl in
+    if pms' == pms && p' == p && iv' == iv && c' == c && bl' == bl then c0
+    else mkCase (ci, u, pms', p', iv', c', bl')
+  | Fix (ln, (lna, tl, bl)) ->
+    let tl' = Array.Fun1.Smart.map f l tl in
+    let l' = iterate g (Array.length tl) l in
+    let bl' = Array.Fun1.Smart.map f l' bl in
+    if tl' == tl && bl' == bl then c0
+    else mkFix (ln,(lna,tl',bl'))
+  | CoFix(ln,(lna,tl,bl)) ->
+    let tl' = Array.Fun1.Smart.map f l tl in
+    let l' = iterate g (Array.length tl) l in
+    let bl' = Array.Fun1.Smart.map f l' bl in
+    mkCoFix (ln,(lna,tl',bl'))
+  | Array(u,t,def,ty) ->
+    let t' = Array.Fun1.Smart.map f l t in
+    let def' = f l def in
+    let ty' = f l ty in
+    if def'==def && t==t' && ty==ty' then c0
+    else mkArray(u,t',def',ty')

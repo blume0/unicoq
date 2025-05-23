@@ -29,4 +29,13 @@ val hash : Constr.t -> t
 val to_constr : t -> Constr.t
 val compare : t -> t -> int
 
-module Map : CMap.S with type key = t
+val kind :  t -> (t, t, Sorts.t, UVars.Instance.t, Sorts.relevance)
+                 Constr.kind_of_term
+
+module Set : CSig.SetS with type elt = t
+module Map : CMap.ExtS with type key = t and module Set := Set
+
+val xfold : ('a -> t -> 'a) -> 'a -> t -> 'a
+
+val map_with_binders :
+  ('a -> 'a) -> ('a -> t -> t) -> 'a -> t -> t
