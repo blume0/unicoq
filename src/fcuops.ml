@@ -107,45 +107,56 @@ type evar_argument =
   | Evarg_Rel of int
   | Evarg_Name of Names.Id.t
 
+
+(* Counts the size of { t' | t' occurence in t /\ t' ∈ args }
+   TODO: quadratic in the worst case ?                                *)
+let count_subterm_occ strict t args =
+  let fold_square =
+    xfold
+      (fun occs t -> occs + CList.count (fun t' -> C.compare t t' = 0) args)
+  in
+  if strict then
+    C.fold fold_square 0 t
+  else fold_square 0 t
+
 (* In addition to the above description of the local-restriction condition, there are two
    additional relaxings controlled by the 'strict' argument in the following implementation,
    to make it correspond to the way the HOPU variable restriction check is actually conducted
    in Ziliani-Sozeau's Unicoq implementation:
-   1- Non-restricted-term argument are just ignored
-   2- Non-unique arguments are allowed at this point, are provoke a failure to apply the rule
-      only in the case they are actually needed.
+   1- Non-restricted-term arguments are just ignored
+   2- Non-unique arguments are allowed at this point, are provoke a failure
+      to apply the rule only in the case they are actually needed.
 *)
-let check_local_restriction ?(strict=false) sigma subst ctx args =
-  let allargs = subst@args in
-  let no_subterm_occ t =
-    let occs = xfold
-      (fun occs t ->
-        occs +
-        CList.count
-          (fun t' -> C.compare t (to_constr sigma t') = 0) allargs)
-      0 t
-    in
-    let _ = assert (occs <> 0) in occs = 1
-  in
+
+
+let check_occ_restriction ?(strict=false) ?(expected=0) ?(map=TMap.empty)
+                          sigma subst ctx args ts =
+  let allargs = List.map (to_constr sigma) ts in
+
   let check_subst acc t decl =
     let* map = acc in
-    if not@@ is_restricted sigma t then if strict then fail() else acc else
+    if not@@ is_restricted sigma t then acc else
     let t = to_constr sigma t in
-    if no_subterm_occ t then
+    if count_subterm_occ strict t allargs = expected then
       let var = Evarg_Name (CND.get_id decl) in
-      return (TMap.add t (Some var) map)
-    else if strict then fail() else return (TMap.add t None map)
+      return
+        (TMap.update t (function None->Some(Some(var))|Some(x)->Some(x)) map)
+    else return (TMap.add t None map)
   in let check_args i acc t =
     let* map = acc in
-    if not@@ is_restricted sigma t then if strict then fail() else acc else
+    if not@@ is_restricted sigma t then acc else
     let t = to_constr sigma t in
-    if no_subterm_occ t then
-      return (TMap.add t (Some(Evarg_Rel i)) map)
-    else if strict then fail() else return (TMap.add t None map)
+    if count_subterm_occ strict t allargs = expected then
+      return (TMap.update t
+             (function None->(Some(Some(Evarg_Rel i)))|Some(x)->Some(x)) map)
+    else return (TMap.add t None map)
   in
-  let map = List.fold_left2 check_subst (return TMap.empty) subst ctx in
+  let map = List.fold_left2 check_subst (return map) subst ctx in
   CList.fold_left_i check_args 1 map args
 
+let check_local_restriction sigma subst ctx args =
+  let ts = subst@args in
+  check_occ_restriction ~expected:1 sigma subst ctx args ts
 
 (* precondition: is_restricted sigma t *)
 let rec unlift_restricted sigma i t =
@@ -164,6 +175,22 @@ let rec unlift_restricted sigma i t =
                         | Some x -> x | None -> raise MyExit)
             "term was not restricted" t
      with MyExit -> fail() end
+
+let rec collect_evar_args sigma i acc t =
+  match C.kind t with
+  | Evar(y, y_args) ->
+     let y_args = Evd.expand_existential sigma
+                    (y, SList.Skip.map of_constr y_args) in
+     let y_args = List.map (unlift_restricted sigma i) y_args in
+     CList.map Option.get (CList.filter ((<>) None) y_args) @ acc
+  | _ -> C.fold_constr_with_binders succ (collect_evar_args sigma) i acc t
+
+
+let check_global_restriction sigma map subst ctx args t =
+  let t = to_constr ~abort_on_undefined_evars:false sigma t in
+  let ts = collect_evar_args sigma 0 [] t in
+  let ts = List.filter (is_restricted sigma) ts in
+  check_occ_restriction ~strict:true ~map sigma subst ctx args ts
 
 (* Same interface as the original invert *)
 (* Inverting
@@ -188,7 +215,13 @@ let invert prune_map sigma ctx t subs args x =
 
   let subsargs = subs@args in
   if not@@ check_term_restriction sigma subsargs then fail() else
-  let* evar_args_map = check_local_restriction sigma subs ctx (List.rev args) in
+  let args = List.rev args in
+  let* evar_args_map =
+    check_local_restriction sigma subs ctx args
+  in
+  let* evar_args_map =
+    check_global_restriction sigma evar_args_map subs ctx args t
+  in
 
   let rec invert' inside_evar t i =
     (* let _ = Format.printf "INVERT' OF %a %d@." Pp.pp_with (ppt t) i in *)
