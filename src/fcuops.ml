@@ -29,11 +29,11 @@ let rec xfold f acc t =
   let acc = f acc t in
   C.fold (fun acc t -> xfold f acc t) acc t
 
-(* HACK to disable the local restriction check, comment this to enable it  *)
-(* let xfold f acc t = let _ = xfold in f acc t *)
+let _ = xfold
 
-let is_constructor_like_head sigma t = match kind sigma t with
-  | Rel _ | Var _ | Ind _ -> true
+
+let is_constructor_like_head kind t = match kind t with
+  | C.Rel _ | Var _ | Ind _ -> true
   | Construct _ -> true (* TODO: but it is invertible *)
   | Const _ ->
      (* (?X[f x] = f x) with (f := fun x => (x, x)) ∈ E
@@ -54,17 +54,17 @@ let is_constructor_like_head sigma t = match kind sigma t with
    I think I need to think more about the essence/the points of the FCU
    restriction in the simple λ-calculus to see how it extends to the
    inductive part of the CIC.                                             *)
-let rec is_restricted sigma ?(i=0) t = match kind sigma t with
-  | Var n  -> true
+let rec is_restricted kind ?(i=0) t = match kind t with
+  | C.Var n  -> true
   | Rel j -> j > i
   | Meta _ | Evar _ -> false
   | Lambda _ | LetIn _ | Prod _ -> false
-  | Cast (t, _, _ (* TODO: ? *)) -> is_restricted sigma t
+  | Cast (t, _, _ (* TODO: ? *)) -> is_restricted kind t
   | App (t, args) ->
      (* TODO: see if the invariants that t is non-applicative and |args| > 0
         is always respected                                               *)
-     not (Array.exists (fun a -> not@@ is_restricted ~i sigma a) args)
-     && is_constructor_like_head sigma t
+     not (Array.exists (fun a -> not@@ is_restricted ~i kind a) args)
+     && is_constructor_like_head kind t
   | Const _ | Ind _ | Construct _ | Sort _ -> false
   | Case _ -> false
       (* TODO: maybe there is something to do with this ? *)
@@ -101,7 +101,7 @@ let rec is_restricted sigma ?(i=0) t = match kind sigma t with
 
 
 let check_term_restriction sigma args =
-  not @@ List.exists (fun t -> not (is_restricted sigma t)) args
+  not @@ List.exists (fun t -> not (is_restricted (kind sigma) t)) args
 
 type evar_argument =
   | Evarg_Rel of int
@@ -110,13 +110,13 @@ type evar_argument =
 
 (* Counts the size of { t' | t' occurence in t /\ t' ∈ args }
    TODO: quadratic in the worst case ?                                *)
-let count_subterm_occ strict t args =
+let count_subterm_occ strict xfold fold compare t args =
   let fold_square =
     xfold
-      (fun occs t -> occs + CList.count (fun t' -> C.compare t t' = 0) args)
+      (fun occs t -> occs + CList.count (fun t' -> compare t t' = 0) args)
   in
   if strict then
-    C.fold fold_square 0 t
+    fold fold_square 0 t
   else fold_square 0 t
 
 (* In addition to the above description of the local-restriction condition, there are two
@@ -131,25 +131,31 @@ let count_subterm_occ strict t args =
 
 let check_occ_restriction ?(strict=false) ?(expected=0) ?(map=TMap.empty)
                           sigma subst ctx args ts =
-  let allargs = List.map (to_constr sigma) ts in
+  let hkind = Termoccs.kind in
+  let canonize t = to_constr sigma t |> Termoccs.hash in
+  let to_constr = Termoccs.to_constr in
+  let count_fun = Termoccs.(count_subterm_occ strict xfold fold compare) in
+
+  let allargs = List.map canonize ts in
+  let subst = List.map canonize subst in
+  let args = List.map canonize args in
 
   let check_subst acc t decl =
     let* map = acc in
-    if not@@ is_restricted sigma t then acc else
-    let t = to_constr sigma t in
-    if count_subterm_occ strict t allargs = expected then
+    if not@@ is_restricted hkind t then acc else
+    if count_fun t allargs = expected then
       let var = Evarg_Name (CND.get_id decl) in
       return
-        (TMap.update t (function None->Some(Some(var))|Some(x)->Some(x)) map)
-    else return (TMap.add t None map)
+        (TMap.update (to_constr t)
+           (function None->Some(Some(var))|Some(x)->Some(x)) map)
+    else return (TMap.add (to_constr t) None map)
   in let check_args i acc t =
     let* map = acc in
-    if not@@ is_restricted sigma t then acc else
-    let t = to_constr sigma t in
-    if count_subterm_occ strict t allargs = expected then
-      return (TMap.update t
+    if not@@ is_restricted hkind t then acc else
+    if count_fun t allargs = expected then
+      return (TMap.update (to_constr t)
              (function None->(Some(Some(Evarg_Rel i)))|Some(x)->Some(x)) map)
-    else return (TMap.add t None map)
+    else return (TMap.add (to_constr t) None map)
   in
   let map = List.fold_left2 check_subst (return map) subst ctx in
   CList.fold_left_i check_args 1 map args
@@ -189,7 +195,7 @@ let rec collect_evar_args sigma i acc t =
 let check_global_restriction sigma map subst ctx args t =
   let t = to_constr ~abort_on_undefined_evars:false sigma t in
   let ts = collect_evar_args sigma 0 [] t in
-  let ts = List.filter (is_restricted sigma) ts in
+  let ts = List.filter (is_restricted (kind sigma)) ts in
   check_occ_restriction ~strict:true ~map sigma subst ctx args ts
 
 (* Same interface as the original invert *)
@@ -225,7 +231,7 @@ let invert prune_map sigma ctx t subs args x =
 
   let rec invert' inside_evar t i =
     (* let _ = Format.printf "INVERT' OF %a %d@." Pp.pp_with (ppt t) i in *)
-    if is_restricted sigma ~i t then
+    if is_restricted (kind sigma) ~i t then
       (* let _ = Format.printf "INVERTING RESTRICTED(%d) %a@." i Pp.pp_with (ppt t) in *)
       let* et = unlift_restricted sigma i t in
       let t = to_constr sigma et in

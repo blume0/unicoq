@@ -8,6 +8,8 @@ CAMLDEBUG = "-g"
 -arg -bt
 src/logger.mli
 src/logger.ml
+src/termoccs.ml
+src/termoccs.mli
 src/munify.mli
 src/munify.ml
 src/fcuops.ml

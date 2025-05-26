@@ -20,6 +20,7 @@ Abort.
 
 
 
+
 (* Same example but formulated in a more "natural" way *)
 Import EqNotations.
 
