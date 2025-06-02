@@ -18,6 +18,7 @@ type options = {
     inst_super_aggressive : bool;
     inst_try_solving_eqn : bool;
     inst_use_fcu : bool;
+    inst_fallback_on_fail : bool;
     use_hash : bool
 }
 
