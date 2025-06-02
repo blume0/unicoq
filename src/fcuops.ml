@@ -59,7 +59,8 @@ let rec is_restricted kind ?(i=0) t = match kind t with
   | Rel j -> j > i
   | Meta _ | Evar _ -> false
   | Lambda _ | LetIn _ | Prod _ -> false
-  | Cast (t, _, _ (* TODO: ? *)) -> is_restricted kind t
+  | Cast (t, _, bigt (* TODO: is it necessary ? *)) ->
+    is_restricted kind t && is_restricted kind bigt
   | App (t, args) ->
      (* TODO: see if the invariants that t is non-applicative and |args| > 0
         is always respected                                               *)
@@ -187,6 +188,7 @@ let rec collect_evar_args sigma i acc t =
   | Evar(y, y_args) ->
      let y_args = Evd.expand_existential sigma
                     (y, SList.Skip.map of_constr y_args) in
+     let y_args = List.filter (is_restricted (kind sigma) ~i) y_args in
      let y_args = List.map (unlift_restricted sigma i) y_args in
      CList.map Option.get (CList.filter ((<>) None) y_args) @ acc
   | _ -> C.fold_constr_with_binders succ (collect_evar_args sigma) i acc t
