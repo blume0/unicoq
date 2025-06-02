@@ -89,6 +89,7 @@ type options = {
     inst_super_aggressive : bool;
     inst_try_solving_eqn : bool;
     inst_use_fcu : bool;
+    inst_fallback_on_fail : bool;
     use_hash : bool
 }
 
@@ -99,6 +100,7 @@ let default_options = ref {
     inst_super_aggressive = false;
     inst_try_solving_eqn = false;
     inst_use_fcu = true;
+    inst_fallback_on_fail = false;
     use_hash = false
 }
 
@@ -121,6 +123,10 @@ let uses_fcu () = !default_options.inst_use_fcu
 let set_fcu_use b = default_options :=
                       {!default_options with inst_use_fcu = b}
 
+let fallback_on_fail () = !default_options.inst_fallback_on_fail
+let set_fallback_on_fail b = default_options :=
+    {!default_options with inst_fallback_on_fail = b}
+
 let _ = Goptions.declare_bool_option {
   Goptions.optdepr = None;
   Goptions.optstage = Interp;
@@ -135,6 +141,14 @@ let _ = Goptions.declare_bool_option {
   Goptions.optkey = ["Unicoq"; "Super"; "Aggressive"];
   Goptions.optread = is_super_aggressive;
   Goptions.optwrite = set_super_aggressive;
+}
+
+let _ = Goptions.declare_bool_option {
+    Goptions.optdepr = None;
+    Goptions.optstage = Interp;
+    Goptions.optkey = ["UnicoqFallbackOnFailure"];
+    Goptions.optread = fallback_on_fail;
+    Goptions.optwrite = set_fallback_on_fail
 }
 
 let _ = Goptions.declare_bool_option {
@@ -506,8 +520,7 @@ let try_unfolding sigma ts env t =
    unification algorithm.
 *)
 let invert map sigma ctx (t : EConstr.t) subs args ev' =
-  if (uses_fcu()) then Fcuops.invert map sigma ctx t subs args ev' else
-
+  
   let sargs = subs @ args in
 
 
@@ -858,6 +871,20 @@ module Inst = functor (U : Unifier) -> struct
     let nc = Evd.evar_filtered_context evi in
     let res =
       let subsl = Evd.expand_existential sigma0 (ev, subs) in
+      let save_invert = invert in
+      let invert = if uses_fcu () then Fcuops.invert else invert in
+      let res1 = Fcuops.invert Evar.Map.empty sigma0 nc t subsl args ev in
+      let res2 = save_invert Evar.Map.empty sigma0 nc t subsl args ev in
+      if res1 <> None && res2 <> None then
+        let t = snd @@ Option.get res1 in
+        let t' = snd @@ Option.get res2 in
+        if t <> t' then
+          let env = Environ.empty_env in
+          Format.printf "@.@.@.FOUND DIFFERING %a != %a @.@.@."
+            Pp.pp_with (Printer.pr_econstr_env env sigma0 t)
+            Pp.pp_with (Printer.pr_econstr_env env sigma0 t')
+        else ()
+      else ();
       invert Evar.Map.empty sigma0 nc t subsl args ev >>= fun (map, t') ->
       fill_lambdas_invert_types map env sigma0 nc t' subsl args ev >>= fun (map, t') ->
       let sigma = prune_all map sigma0 in
@@ -879,10 +906,11 @@ module Inst = functor (U : Unifier) -> struct
             (* ?X : Π Δ. Type i = ?Y : Π Δ'. Type j.
 	       The body of ?X and ?Y just has to be of type Π Δ. Type k for some k <= i, j. *)
 	    let evienv = Evd.evar_env env evi in
-	    let ctx1, i = R.dest_arity evienv (EConstr.to_constr ~abort_on_undefined_evars:false sigma (Evd.evar_concl evi)) in
+            let evars = Evd.evar_handler sigma in
+	    let ctx1, i = R.dest_arity ~evars evienv (EConstr.to_constr ~abort_on_undefined_evars:false sigma (Evd.evar_concl evi)) in
 	    let evi2 = Evd.find_undefined sigma evk2 in
 	    let evi2env = Evd.evar_env env evi2 in
-	    let ctx2, j = R.dest_arity evi2env (EConstr.to_constr ~abort_on_undefined_evars:false sigma (Evd.evar_concl evi2)) in
+	    let ctx2, j = R.dest_arity ~evars evi2env (EConstr.to_constr ~abort_on_undefined_evars:false sigma (Evd.evar_concl evi2)) in
 	    let i = ESorts.make i in
 	    let j = ESorts.make j in
 	    if i == j || Evd.check_eq sigma i j then (* Shortcut, i = j *)
@@ -1628,6 +1656,22 @@ let unify_new flags =
   end : Params) in
   let module M = (val unif (module P)) in
   M.unify_evar_conv
+
+let unify_new f env sigma pb t u =
+  match unify_new f env sigma pb t u with
+  | Evarsolve.Success _ as res -> res
+  | Evarsolve.UnifFailure _ when fallback_on_fail() ->
+      let res =
+        Evarconv.evar_unify f Evarsolve.TermUnification env sigma pb t u
+      in begin
+        match res with
+        | Evarsolve.Success _ ->
+          Format.eprintf
+            "@.FALLEN BACK TO ROCQ AND SUCCEEDED AFTER UNICOQ FAILED.@";
+          res
+        | Evarsolve.UnifFailure _ -> res
+      end
+  | res -> res
 
 let unify_evar_conv ts =
   let module P = (struct

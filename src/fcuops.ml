@@ -59,7 +59,8 @@ let rec is_restricted kind ?(i=0) t = match kind t with
   | Rel j -> j > i
   | Meta _ | Evar _ -> false
   | Lambda _ | LetIn _ | Prod _ -> false
-  | Cast (t, _, _ (* TODO: ? *)) -> is_restricted kind t
+  | Cast (t, _, bigt (* TODO: is it necessary ? *)) ->
+    is_restricted kind t && is_restricted kind bigt
   | App (t, args) ->
      (* TODO: see if the invariants that t is non-applicative and |args| > 0
         is always respected                                               *)
@@ -187,6 +188,7 @@ let rec collect_evar_args sigma i acc t =
   | Evar(y, y_args) ->
      let y_args = Evd.expand_existential sigma
                     (y, SList.Skip.map of_constr y_args) in
+     let y_args = List.filter (is_restricted (kind sigma) ~i) y_args in
      let y_args = List.map (unlift_restricted sigma i) y_args in
      CList.map Option.get (CList.filter ((<>) None) y_args) @ acc
   | _ -> C.fold_constr_with_binders succ (collect_evar_args sigma) i acc t
@@ -205,19 +207,19 @@ let invert prune_map sigma ctx t subs args x =
   let exception MyExit in
   let prune_map = ref prune_map in
 
-  (*DEBUG*)
-  (* let ppe e = *)
-  (*   Printer.pr_evar sigma (x, Evar.Map.find x (Evd.undefined_map sigma)) *)
-  (* in *)
-  (* let ppt c = Printer.pr_econstr_env Environ.empty_env sigma c in *)
-  (* begin let open Pp in *)
-  (* Format.printf "BLUME: REVERTING %a@." pp_with @@ *)
-  (*   ppe x *)
-  (*   ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs *)
-  (*   ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args *)
-  (*   ++ (str " ?R? ") ++ (ppt t) *)
-  (* end; *)
-  (* let _ = ppt in *)
+  (* DEBUG *)
+  let ppe e =
+    Printer.pr_existential_key Environ.empty_env sigma x
+  in
+  let ppt c = Printer.pr_econstr_env Environ.empty_env sigma c in
+  begin let open Pp in
+  Format.printf "BLUME: REVERTING %a@." pp_with @@
+    ppe x
+    ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs
+    ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args
+    ++ (str " ?R? ") ++ (ppt t)
+  end;
+  let _ = ppt in
 
   let subsargs = subs@args in
   if not@@ check_term_restriction sigma subsargs then fail() else
@@ -229,11 +231,11 @@ let invert prune_map sigma ctx t subs args x =
     check_global_restriction sigma evar_args_map subs ctx args t
   in
 
-  let rec invert' inside_evar t i =
-    (* let _ = Format.printf "INVERT' OF %a %d@." Pp.pp_with (ppt t) i in *)
+  let rec invert' inside_evar t ?(unlift=true) i =
+    let _ = Format.printf "INVERT' OF %a %d@." Pp.pp_with (ppt t) i in
     if is_restricted (kind sigma) ~i t then
       (* let _ = Format.printf "INVERTING RESTRICTED(%d) %a@." i Pp.pp_with (ppt t) in *)
-      let* et = unlift_restricted sigma i t in
+      let* et = if unlift then unlift_restricted sigma i t else Some t in
       let t = to_constr sigma et in
       match TMap.find_opt t evar_args_map with
         (* TODO: check indice stuff *)
@@ -247,7 +249,7 @@ let invert prune_map sigma ctx t subs args x =
            match C.kind t with (* if we're a bound variable, is over *)
            | Rel _ | Var _ -> fail() | _ ->
            try return (map_with_binders sigma succ (fun i t ->
-                           match invert' inside_evar t i with
+                           match invert' inside_evar t ~unlift:false i with
                            | Some t -> t
                            | None -> raise MyExit) i et)
            with MyExit -> fail()
