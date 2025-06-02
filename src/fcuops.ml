@@ -209,7 +209,7 @@ let invert prune_map sigma ctx t subs args x =
 
   (*DEBUG*)
   (* let ppe e = *)
-  (*   Printer.pr_evar sigma (x, Evar.Map.find x (Evd.undefined_map sigma)) *)
+  (*   Printer.pr_existential_key Environ.empty_env sigma x *)
   (* in *)
   (* let ppt c = Printer.pr_econstr_env Environ.empty_env sigma c in *)
   (* begin let open Pp in *)
@@ -231,11 +231,15 @@ let invert prune_map sigma ctx t subs args x =
     check_global_restriction sigma evar_args_map subs ctx args t
   in
 
-  let rec invert' inside_evar t i =
-    (* let _ = Format.printf "INVERT' OF %a %d@." Pp.pp_with (ppt t) i in *)
-    if is_restricted (kind sigma) ~i t then
+  let rec invert' inside_evar t (unlift, i) =
+    (* let _ = Format.printf "INVERT' OF %a (i=%d, unlift=%b,restricted=%b)@." *)
+    (*     Pp.pp_with (ppt t) i *)
+    (*     unlift *)
+    (*     @@ let i = if unlift then i else 0 in is_restricted (kind sigma) ~i t *)
+    (* in *)
+    if is_restricted (kind sigma) ~i:(if unlift then i else 0) t then
       (* let _ = Format.printf "INVERTING RESTRICTED(%d) %a@." i Pp.pp_with (ppt t) in *)
-      let* et = unlift_restricted sigma i t in
+      let* et = if unlift then unlift_restricted sigma i t else return t in
       let t = to_constr sigma et in
       match TMap.find_opt t evar_args_map with
         (* TODO: check indice stuff *)
@@ -246,12 +250,14 @@ let invert prune_map sigma ctx t subs args x =
          (* Here the term does not occur as an argument, but we can still
             try to invert its subterms. *)
          begin
-           match C.kind t with (* if we're a bound variable, is over *)
+           match C.kind t with
+           (* if we're a leaf (i.e. a bound variable), it is over *)
            | Rel _ | Var _ -> fail() | _ ->
-           try return (map_with_binders sigma succ (fun i t ->
-                           match invert' inside_evar t i with
+           let succ _ = failwith "Term was not restricted" in
+           try return (map_with_binders sigma succ (fun _ t ->
+                           match invert' inside_evar t (false,i) with
                            | Some t -> t
-                           | None -> raise MyExit) i et)
+                           | None -> raise MyExit) (false,-1) et)
            with MyExit -> fail()
          end
 
@@ -261,7 +267,7 @@ let invert prune_map sigma ctx t subs args x =
       begin
         let y_args = Evd.expand_existential sigma (y, y_args) in
         let invert_or_prune pos u =
-          match invert' true u i with
+          match invert' true u (unlift, i) with
           | Some u -> u
           | None ->
              if not inside_evar then begin
@@ -277,13 +283,14 @@ let invert prune_map sigma ctx t subs args x =
       end
 
     | _ ->
-       try return (map_with_binders sigma succ (fun i c ->
-                       match invert' inside_evar c i with
+       let succ (_, i) = (true, succ i) in
+       try return (map_with_binders sigma succ (fun (u,i) c ->
+                       match invert' inside_evar c (u,i) with
                        | Some c -> c
-                       | None -> raise MyExit) i t)
+                       | None -> raise MyExit) (unlift,i) t)
        with MyExit -> fail()
   in
-  let* t_minus_one = try invert' false t 0 with MyExit -> fail() in
+  let* t_minus_one = try invert' false t (false,0) with MyExit -> fail() in
   (*DEBUG*)
   (* begin let open Pp in *)
   (*   Format.printf "BLUME: SUCCESSFULLY REVERTED AS %a@." pp_with *)
