@@ -90,6 +90,8 @@ type options = {
     inst_try_solving_eqn : bool;
     inst_use_fcu : bool;
     inst_fallback_on_fail : bool;
+    inst_constr_as_const : bool;
+    inst_defn_as_const : bool;
     use_hash : bool
 }
 
@@ -101,6 +103,8 @@ let default_options = ref {
     inst_try_solving_eqn = false;
     inst_use_fcu = true;
     inst_fallback_on_fail = false;
+    inst_constr_as_const = false;
+    inst_defn_as_const = false;
     use_hash = false
 }
 
@@ -127,6 +131,16 @@ let fallback_on_fail () = !default_options.inst_fallback_on_fail
 let set_fallback_on_fail b = default_options :=
     {!default_options with inst_fallback_on_fail = b}
 
+let constr_as_const () = !default_options.inst_constr_as_const
+let set_constr_as_const b = default_options :=
+                              {!default_options with inst_constr_as_const = b};
+                            Fcuops.inst_constr_as_const := true
+
+let defn_as_const () = !default_options.inst_defn_as_const
+let set_defn_as_const b = default_options :=
+                              {!default_options with inst_defn_as_const = b};
+                          Fcuops.inst_defn_as_const := true
+
 let _ = Goptions.declare_bool_option {
   Goptions.optdepr = None;
   Goptions.optstage = Interp;
@@ -146,7 +160,7 @@ let _ = Goptions.declare_bool_option {
 let _ = Goptions.declare_bool_option {
     Goptions.optdepr = None;
     Goptions.optstage = Interp;
-    Goptions.optkey = ["UnicoqFallbackOnFailure"];
+    Goptions.optkey = ["Unicoq"; "Fallback"; "On"; "Failure"];
     Goptions.optread = fallback_on_fail;
     Goptions.optwrite = set_fallback_on_fail
 }
@@ -158,6 +172,60 @@ let _ = Goptions.declare_bool_option {
   Goptions.optread = uses_fcu;
   Goptions.optwrite = set_fcu_use
 }
+
+let _ = Goptions.declare_bool_option {
+  Goptions.optdepr = None;
+  Goptions.optstage = Interp;
+  Goptions.optkey = ["Unicoq"; "Blume"; "Constructors"; "As"; "Constants"];
+  Goptions.optread = constr_as_const;
+  Goptions.optwrite = set_constr_as_const
+}
+
+let _ = Goptions.declare_bool_option {
+  Goptions.optdepr = None;
+  Goptions.optstage = Interp;
+  Goptions.optkey = ["Unicoq"; "Blume"; "Definitions"; "As"; "Constants"];
+  Goptions.optread = defn_as_const;
+  Goptions.optwrite = set_defn_as_const
+}
+
+type bench = {
+    mutable successes_after_fallbacks : int;
+    mutable meta_inst_calls : int;
+    mutable meta_inst_successes : int;
+    mutable fo_calls : int
+}
+let bench = {
+    successes_after_fallbacks=0; meta_inst_calls=0; meta_inst_successes=0;fo_calls=0
+}
+
+let reset_bench () =
+  bench.successes_after_fallbacks <- 0;
+  bench.meta_inst_calls <- 0;
+  bench.meta_inst_successes <- 0;
+  bench.fo_calls <- 0
+
+let dump_bench fname =
+  let (a,b,c,d) =
+    try
+      let f = open_in fname in
+      let s = input_line f in
+      match List.map int_of_string @@ String.split_on_char ' ' s with
+      | [a;b;c;d] -> a,b,c,d
+      | _ -> failwith "ill formed bench.txt"
+    with e -> 0,0,0,0
+  in
+  let f = open_out fname in
+  let _ = Printf.fprintf f "%d %d %d %d\n"
+            (bench.successes_after_fallbacks + a)
+            (bench.meta_inst_calls + b)
+            (bench.meta_inst_successes + c)
+            (bench.fo_calls + d)
+  in
+  let _ = Printf.fprintf f "fallback=%b; FCU=%b\n" (fallback_on_fail ()) (uses_fcu ()) in
+  close_out f; reset_bench ()
+
+
 
 let get_solving_eqn () = !default_options.inst_try_solving_eqn
 let set_solving_eqn b =
@@ -871,7 +939,7 @@ module Inst = functor (U : Unifier) -> struct
     let nc = Evd.evar_filtered_context evi in
     let res =
       let subsl = Evd.expand_existential sigma0 (ev, subs) in
-      let invert = if uses_fcu () then Fcuops.invert else invert in
+      let invert = if uses_fcu () then Fcuops.invert env else invert in
       invert Evar.Map.empty sigma0 nc t subsl args ev >>= fun (map, t') ->
       fill_lambdas_invert_types map env sigma0 nc t' subsl args ev >>= fun (map, t') ->
       let sigma = prune_all map sigma0 in
@@ -934,7 +1002,7 @@ module Inst = functor (U : Unifier) -> struct
 	  Some p
     in
     match res with
-    | Some r -> r
+    | Some r -> let _ = bench.meta_inst_successes<-bench.meta_inst_successes+1 in r
     | None -> (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
 end
 
@@ -1485,7 +1553,7 @@ module struct
     let in_problem_class =
       if (not@@ uses_fcu()) then
         is_variable_subs sigma subs && is_variable_args sigma args
-      else Fcuops.(check_term_restriction sigma (subs@args))
+      else Fcuops.(check_term_restriction env sigma (subs@args))
     in
     if must_inst dir ev &&  in_problem_class then
       begin
@@ -1497,6 +1565,7 @@ module struct
             let match_evars = P.match_evars
           end : Params) in
           let module U' = (val unif (module P') : Unifier) in
+          let _ = bench.meta_inst_calls<-bench.meta_inst_calls+1 in
           report (log_eq_spine env "Meta-Inst" conv_t (mkEvar evsubs, args) t (dbg, sigma) &&=
                   let module I' = Inst(U') in
                   I'.instantiate' dir options conv_t env evsubs args t)
@@ -1581,6 +1650,7 @@ module struct
 
   (* ?e a1 a2 = h b1 b2 b3 ---> ?e = h b1 /\ a1 = b2 /\ a2 = b3 *)
   and meta_fo dir options conv_t env ((ev, _ as evsubs), args) (h, args' as t) sigma dbg =
+    let _ = bench.fo_calls<-bench.fo_calls+1 in
     if not (should_try_fo args t) || not (must_inst dir ev) then
       (dbg, ES.UnifFailure (sigma, PE.NotSameHead))
     else
@@ -1653,12 +1723,18 @@ let unify_new f env sigma pb t u =
       in begin
         match res with
         | Evarsolve.Success _ ->
+          let _ = bench.successes_after_fallbacks<-bench.successes_after_fallbacks+1 in
           Format.eprintf
             "@.FALLEN BACK TO ROCQ AND SUCCEEDED AFTER UNICOQ FAILED.@";
           res
         | Evarsolve.UnifFailure _ -> res
       end
   | res -> res
+
+let unify_new f env sigma pb t u =
+  let res = unify_new f env sigma pb t u in
+  let () = if get_debug () then dump_bench "./bench.txt" in
+  res
 
 let unify_evar_conv ts =
   let module P = (struct

@@ -25,6 +25,9 @@ module X = struct
 end
 module TMap = CMap.Make(X)
 
+let inst_constr_as_const = ref false
+let inst_defn_as_const = ref false
+
 let rec xfold f acc t =
   let acc = f acc t in
   C.fold (fun acc t -> xfold f acc t) acc t
@@ -32,15 +35,13 @@ let rec xfold f acc t =
 let _ = xfold
 
 
-let is_constructor_like_head kind t = match kind t with
+let is_constructor_like_head env kind t = match kind t with
   | C.Rel _ | Var _ | Ind _ -> true
-  | Construct _ -> true (* TODO: but it is invertible *)
-  | Const _ ->
-     (* (?X[f x] = f x) with (f := fun x => (x, x)) ∈ E
-        (?X:=fun e => e) is not an mgu
-        Example of incompatible solution: (?X:=fun e => (e.2, e.2)
-     *)
-     false
+  | Construct _ -> !inst_constr_as_const
+  | Const (k,_) ->
+     (!inst_defn_as_const) || (match (Environ.lookup_constant k env).const_body with
+                              | Undef _ | Primitive _ | Symbol _ -> true
+                              | _ -> false)
   | _ -> false
 
 
@@ -54,18 +55,18 @@ let is_constructor_like_head kind t = match kind t with
    I think I need to think more about the essence/the points of the FCU
    restriction in the simple λ-calculus to see how it extends to the
    inductive part of the CIC.                                             *)
-let rec is_restricted kind ?(i=0) t = match kind t with
+let rec is_restricted env kind ?(i=0) t = match kind t with
   | C.Var n  -> true
   | Rel j -> j > i
   | Meta _ | Evar _ -> false
   | Lambda _ | LetIn _ | Prod _ -> false
   | Cast (t, _, bigt (* TODO: is it necessary ? *)) ->
-    is_restricted kind t && is_restricted kind bigt
+    is_restricted env kind t && is_restricted env kind bigt
   | App (t, args) ->
      (* TODO: see if the invariants that t is non-applicative and |args| > 0
         is always respected                                               *)
-     not (Array.exists (fun a -> not@@ is_restricted ~i kind a) args)
-     && is_constructor_like_head kind t
+     not (Array.exists (fun a -> not@@ is_restricted env ~i kind a) args)
+     && is_constructor_like_head env kind t
   | Const _ | Ind _ | Construct _ | Sort _ -> false
   | Case _ -> false
       (* TODO: maybe there is something to do with this ? *)
@@ -101,8 +102,8 @@ let rec is_restricted kind ?(i=0) t = match kind t with
      pruning procedure                                                            *)
 
 
-let check_term_restriction sigma args =
-  not @@ List.exists (fun t -> not (is_restricted (kind sigma) t)) args
+let check_term_restriction env sigma args =
+  not @@ List.exists (fun t -> not (is_restricted env (kind sigma) t)) args
 
 type evar_argument =
   | Evarg_Rel of int
@@ -130,7 +131,7 @@ let count_subterm_occ strict xfold fold compare t args =
 *)
 
 
-let check_occ_restriction ?(strict=false) ?(expected=0) ?(map=TMap.empty)
+let check_occ_restriction env ?(strict=false) ?(expected=0) ?(map=TMap.empty)
                           sigma subst ctx args ts =
   let hkind = Termoccs.kind in
   let canonize t = to_constr sigma t |> Termoccs.hash in
@@ -143,7 +144,7 @@ let check_occ_restriction ?(strict=false) ?(expected=0) ?(map=TMap.empty)
 
   let check_subst acc t decl =
     let* map = acc in
-    if not@@ is_restricted hkind t then acc else
+    if not@@ is_restricted env hkind t then acc else
     if count_fun t allargs = expected then
       let var = Evarg_Name (CND.get_id decl) in
       return
@@ -152,7 +153,7 @@ let check_occ_restriction ?(strict=false) ?(expected=0) ?(map=TMap.empty)
     else return (TMap.add (to_constr t) None map)
   in let check_args i acc t =
     let* map = acc in
-    if not@@ is_restricted hkind t then acc else
+    if not@@ is_restricted env hkind t then acc else
     if count_fun t allargs = expected then
       return (TMap.update (to_constr t)
              (function None->(Some(Some(Evarg_Rel i)))|Some(x)->Some(x)) map)
@@ -161,9 +162,9 @@ let check_occ_restriction ?(strict=false) ?(expected=0) ?(map=TMap.empty)
   let map = List.fold_left2 check_subst (return map) subst ctx in
   CList.fold_left_i check_args 1 map args
 
-let check_local_restriction sigma subst ctx args =
+let check_local_restriction env sigma subst ctx args =
   let ts = subst@args in
-  check_occ_restriction ~expected:1 sigma subst ctx args ts
+  check_occ_restriction env ~expected:1 sigma subst ctx args ts
 
 (* precondition: is_restricted sigma t *)
 let rec unlift_restricted sigma i t =
@@ -183,27 +184,27 @@ let rec unlift_restricted sigma i t =
             "term was not restricted" t
      with MyExit -> fail() end
 
-let rec collect_evar_args sigma i acc t =
+let rec collect_evar_args env sigma i acc t =
   match C.kind t with
   | Evar(y, y_args) ->
      let y_args = Evd.expand_existential sigma
                     (y, SList.Skip.map of_constr y_args) in
-     let y_args = List.filter (is_restricted (kind sigma) ~i) y_args in
+     let y_args = List.filter (is_restricted env (kind sigma) ~i) y_args in
      let y_args = List.map (unlift_restricted sigma i) y_args in
      CList.map Option.get (CList.filter ((<>) None) y_args) @ acc
-  | _ -> C.fold_constr_with_binders succ (collect_evar_args sigma) i acc t
+  | _ -> C.fold_constr_with_binders succ (collect_evar_args env sigma) i acc t
 
 
-let check_global_restriction sigma map subst ctx args t =
+let check_global_restriction env sigma map subst ctx args t =
   let t = to_constr ~abort_on_undefined_evars:false sigma t in
-  let ts = collect_evar_args sigma 0 [] t in
-  let ts = List.filter (is_restricted (kind sigma)) ts in
-  check_occ_restriction ~strict:true ~map sigma subst ctx args ts
+  let ts = collect_evar_args env sigma 0 [] t in
+  let ts = List.filter (is_restricted env (kind sigma)) ts in
+  check_occ_restriction env ~strict:true ~map sigma subst ctx args ts
 
 (* Same interface as the original invert *)
 (* Inverting
        ?x[subs] args = t where (sigma ⊧ ?x[ctx]) *)
-let invert prune_map sigma ctx t subs args x =
+let invert env prune_map sigma ctx t subs args x =
   let exception MyExit in
   let prune_map = ref prune_map in
 
@@ -222,13 +223,13 @@ let invert prune_map sigma ctx t subs args x =
   (* let _ = ppt in *)
 
   let subsargs = subs@args in
-  if not@@ check_term_restriction sigma subsargs then fail() else
+  if not@@ check_term_restriction env sigma subsargs then fail() else
   let args = List.rev args in
   let* evar_args_map =
-    check_local_restriction sigma subs ctx args
+    check_local_restriction env sigma subs ctx args
   in
   let* evar_args_map =
-    check_global_restriction sigma evar_args_map subs ctx args t
+    check_global_restriction env sigma evar_args_map subs ctx args t
   in
 
   let rec invert' inside_evar t (unlift, i) =
@@ -237,7 +238,7 @@ let invert prune_map sigma ctx t subs args x =
     (*     unlift *)
     (*     @@ let i = if unlift then i else 0 in is_restricted (kind sigma) ~i t *)
     (* in *)
-    if is_restricted (kind sigma) ~i:(if unlift then i else 0) t then
+    if is_restricted env (kind sigma) ~i:(if unlift then i else 0) t then
       (* let _ = Format.printf "INVERTING RESTRICTED(%d) %a@." i Pp.pp_with (ppt t) in *)
       let* et = if unlift then unlift_restricted sigma i t else return t in
       let t = to_constr sigma et in

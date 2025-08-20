@@ -19,6 +19,8 @@ type options = {
     inst_try_solving_eqn : bool;
     inst_use_fcu : bool;
     inst_fallback_on_fail : bool;
+    inst_constr_as_const : bool;
+    inst_defn_as_const : bool;
     use_hash : bool
 }
 
