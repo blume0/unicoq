@@ -40,7 +40,7 @@ let munify_on = ref false
 let debug = ref false
 
 let set_debug b =
-  debug := b
+  debug := b; Fcuops.debug := b
 
 let get_debug () = !debug
 
@@ -92,6 +92,8 @@ type options = {
     inst_fallback_on_fail : bool;
     inst_constr_as_const : bool;
     inst_defn_as_const : bool;
+    inst_gconst_as_restricted : bool;
+    inst_local_cond_heuristic : bool;
     use_hash : bool
 }
 
@@ -103,8 +105,10 @@ let default_options = ref {
     inst_try_solving_eqn = false;
     inst_use_fcu = true;
     inst_fallback_on_fail = false;
-    inst_constr_as_const = false;
+    inst_constr_as_const = true;
     inst_defn_as_const = false;
+    inst_gconst_as_restricted = false;
+    inst_local_cond_heuristic = false;
     use_hash = false
 }
 
@@ -134,12 +138,24 @@ let set_fallback_on_fail b = default_options :=
 let constr_as_const () = !default_options.inst_constr_as_const
 let set_constr_as_const b = default_options :=
                               {!default_options with inst_constr_as_const = b};
-                            Fcuops.inst_constr_as_const := true
+                            Fcuops.inst_constr_as_const := b
 
 let defn_as_const () = !default_options.inst_defn_as_const
 let set_defn_as_const b = default_options :=
                               {!default_options with inst_defn_as_const = b};
-                          Fcuops.inst_defn_as_const := true
+                          Fcuops.inst_defn_as_const := b
+
+let gconst_as_restricted () = !default_options.inst_gconst_as_restricted
+let set_gconst_as_restricted b =
+                          default_options :=
+                            {!default_options with inst_defn_as_const = b};
+                          Fcuops.inst_gconst_as_restricted := b
+
+let local_cond_heuristic () = !default_options.inst_local_cond_heuristic
+let set_local_cond_heuristic b =
+                          default_options :=
+                            {!default_options with inst_local_cond_heuristic = b};
+                          Fcuops.inst_local_cond_heuristic := b
 
 let _ = Goptions.declare_bool_option {
   Goptions.optdepr = None;
@@ -189,6 +205,22 @@ let _ = Goptions.declare_bool_option {
   Goptions.optwrite = set_defn_as_const
 }
 
+let _ = Goptions.declare_bool_option {
+  Goptions.optdepr = None;
+  Goptions.optstage = Interp;
+  Goptions.optkey = ["Unicoq"; "Blume"; "Ground"; "Constants"; "As"; "Restricted"];
+  Goptions.optread = gconst_as_restricted;
+  Goptions.optwrite = set_gconst_as_restricted
+}
+
+let _ = Goptions.declare_bool_option {
+  Goptions.optdepr = None;
+  Goptions.optstage = Interp;
+  Goptions.optkey = ["Unicoq"; "Blume"; "Greatest"; "Local"; "Argument"; "Heuristic"];
+  Goptions.optread = local_cond_heuristic;
+  Goptions.optwrite = set_local_cond_heuristic
+}
+
 type bench = {
     mutable successes_after_fallbacks : int;
     mutable meta_inst_calls : int;
@@ -210,6 +242,7 @@ let dump_bench fname =
     try
       let f = open_in fname in
       let s = input_line f in
+      close_in f;
       match List.map int_of_string @@ String.split_on_char ' ' s with
       | [a;b;c;d] -> a,b,c,d
       | _ -> failwith "ill formed bench.txt"
@@ -222,7 +255,10 @@ let dump_bench fname =
             (bench.meta_inst_successes + c)
             (bench.fo_calls + d)
   in
-  let _ = Printf.fprintf f "fallback=%b; FCU=%b\n" (fallback_on_fail ()) (uses_fcu ()) in
+  let _ = Printf.fprintf f
+      "fallback=%b; FCU=%b; RestrictionHeuristics=%b; defn_as_const=%b\n"
+      (fallback_on_fail ()) (uses_fcu ()) (local_cond_heuristic()) (defn_as_const())
+  in
   close_out f; reset_bench ()
 
 

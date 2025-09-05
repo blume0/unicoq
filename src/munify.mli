@@ -21,6 +21,8 @@ type options = {
     inst_fallback_on_fail : bool;
     inst_constr_as_const : bool;
     inst_defn_as_const : bool;
+    inst_gconst_as_restricted : bool;
+    inst_local_cond_heuristic : bool;
     use_hash : bool
 }
 

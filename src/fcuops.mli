@@ -1,6 +1,9 @@
 
 val inst_constr_as_const : bool ref
 val inst_defn_as_const : bool ref
+val inst_gconst_as_restricted : bool ref
+val inst_local_cond_heuristic : bool ref
+val debug : bool ref
 
 val invert :
   Environ.env ->

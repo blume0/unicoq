@@ -25,8 +25,12 @@ module X = struct
 end
 module TMap = CMap.Make(X)
 
-let inst_constr_as_const = ref false
+let inst_constr_as_const = ref true
 let inst_defn_as_const = ref false
+let inst_gconst_as_restricted = ref false
+let inst_local_cond_heuristic = ref false
+let debug = ref false
+
 
 let rec xfold f acc t =
   let acc = f acc t in
@@ -67,7 +71,8 @@ let rec is_restricted env kind ?(i=0) t = match kind t with
         is always respected                                               *)
      not (Array.exists (fun a -> not@@ is_restricted env ~i kind a) args)
      && is_constructor_like_head env kind t
-  | Const _ | Ind _ | Construct _ | Sort _ -> false
+  | Const _ -> !inst_gconst_as_restricted
+  | Ind _ | Construct _ | Sort _ -> false
   | Case _ -> false
       (* TODO: maybe there is something to do with this ? *)
   | Fix _ | CoFix _ -> false
@@ -136,8 +141,14 @@ let check_occ_restriction env ?(strict=false) ?(expected=0) ?(map=TMap.empty)
   let hkind = Termoccs.kind in
   let canonize t = to_constr sigma t |> Termoccs.hash in
   let to_constr = Termoccs.to_constr in
-  let count_fun = Termoccs.(count_subterm_occ strict xfold fold compare) in
-
+  let count_fun =
+    if strict then
+      fun t l -> 0
+    else if !inst_local_cond_heuristic then
+      fun t l -> List.length (List.filter (fun t' -> compare t t' = 0) l)
+    else
+      Termoccs.(count_subterm_occ strict xfold fold compare)
+  in
   let allargs = List.map canonize ts in
   let subst = List.map canonize subst in
   let args = List.map canonize args in
@@ -150,7 +161,13 @@ let check_occ_restriction env ?(strict=false) ?(expected=0) ?(map=TMap.empty)
       return
         (TMap.update (to_constr t)
            (function None->Some(Some(var))|Some(x)->Some(x)) map)
-    else return (TMap.add (to_constr t) None map)
+    else
+      let _ = if !debug then
+          Format.printf "    FOUND %d occurences instead of %d for %a@."
+          (count_fun t allargs) expected Pp.pp_with
+          (Printer.pr_constr_env env sigma (to_constr t))
+      in
+      return (TMap.add (to_constr t) None map)
   in let check_args i acc t =
     let* map = acc in
     if not@@ is_restricted env hkind t then acc else
@@ -209,18 +226,18 @@ let invert env prune_map sigma ctx t subs args x =
   let prune_map = ref prune_map in
 
   (*DEBUG*)
-  (* let ppe e = *)
-  (*   Printer.pr_existential_key Environ.empty_env sigma x *)
-  (* in *)
-  (* let ppt c = Printer.pr_econstr_env Environ.empty_env sigma c in *)
-  (* begin let open Pp in *)
-  (* Format.printf "BLUME: REVERTING %a@." pp_with @@ *)
-  (*   ppe x *)
-  (*   ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs *)
-  (*   ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args *)
-  (*   ++ (str " ?R? ") ++ (ppt t) *)
-  (* end; *)
-  (* let _ = ppt in *)
+  let ppe e =
+    Printer.pr_existential_key Environ.empty_env sigma x
+  in
+  let ppt c = Printer.pr_econstr_env Environ.empty_env sigma c in
+  begin let open Pp in
+  begin if !debug then
+  Format.printf "BLUME: REVERTING %a@." pp_with @@
+    ppe x
+    ++ (str"[") ++ prlist_with_sep (fun _ -> str"; ") ppt subs
+    ++ (str"] ") ++ prlist_with_sep (fun _ -> str" ") ppt args
+    ++ (str " ?R? ") ++ (ppt t)
+  end end;
 
   let subsargs = subs@args in
   if not@@ check_term_restriction env sigma subsargs then fail() else
@@ -232,12 +249,14 @@ let invert env prune_map sigma ctx t subs args x =
     check_global_restriction env sigma evar_args_map subs ctx args t
   in
 
+  if !debug then Format.printf "    BLUME: WE ARE PAST RESTRICTIONS-CHEKS@." else ();
+
   let rec invert' inside_evar t (unlift, i) =
-    (* let _ = Format.printf "INVERT' OF %a (i=%d, unlift=%b,restricted=%b)@." *)
-    (*     Pp.pp_with (ppt t) i *)
-    (*     unlift *)
-    (*     @@ let i = if unlift then i else 0 in is_restricted (kind sigma) ~i t *)
-    (* in *)
+    let _ = if not !debug then () else Format.printf "    INVERT' OF %a (i=%d, unlift=%b,restricted=%b)@."
+        Pp.pp_with (ppt t) i
+        unlift
+        @@ let i = if unlift then i else 0 in is_restricted env (kind sigma) ~i t
+    in
     if is_restricted env (kind sigma) ~i:(if unlift then i else 0) t then
       (* let _ = Format.printf "INVERTING RESTRICTED(%d) %a@." i Pp.pp_with (ppt t) in *)
       let* et = if unlift then unlift_restricted sigma i t else return t in
@@ -246,7 +265,10 @@ let invert env prune_map sigma ctx t subs args x =
         (* TODO: check indice stuff *)
       | Some (Some(Evarg_Rel j)) -> return (mkRel (j+i))
       | Some (Some(Evarg_Name n)) -> return (mkVar n)
-      | Some None -> raise MyExit
+      | Some None -> if not !debug then raise MyExit else
+          Format.printf "    INVERT': FAILING FOR SOME CONDITION CHECK (";
+          Format.printf "    INVERT': LocalCondHeuristic=%b)@." !inst_local_cond_heuristic;
+          raise MyExit
       | None ->
          (* Here the term does not occur as an argument, but we can still
             try to invert its subterms. *)
@@ -261,7 +283,6 @@ let invert env prune_map sigma ctx t subs args x =
                            | None -> raise MyExit) (false,-1) et)
            with MyExit -> fail()
          end
-
     else match kind sigma t with
     | Evar (y, _) when Evar.equal x y -> fail()
     | Evar (y, y_args) ->
@@ -293,10 +314,22 @@ let invert env prune_map sigma ctx t subs args x =
   in
   let* t_minus_one = try invert' false t (false,0) with MyExit -> fail() in
   (*DEBUG*)
-  (* begin let open Pp in *)
-  (*   Format.printf "BLUME: SUCCESSFULLY REVERTED AS %a@." pp_with *)
-  (*   (ppt t_minus_one) *)
-  (* end; *)
+  begin let open Pp in if not !debug then () else
+    Format.printf "    BLUME: SUCCESSFULLY REVERTED AS %a, WITH PRUNING %a.@." pp_with
+    (ppt t_minus_one)
+    pp_with (
+      let l = Evar.Map.fold_left (fun k vs l -> (k,vs)::l) !prune_map [] in
+      str"[" ++ prlist_with_sep (fun()->str"; ")
+                (fun (x, vs) ->
+                   let id = match Evd.evar_ident x sigma with
+                               | None -> str"?UNK"
+                               | Some i -> Names.Id.print i
+                   in
+                   id++str"("++prlist_with_sep (fun()->str", ") int vs++str")"
+                ) l
+              ++ str"]"
+    )
+  end;
   return (!prune_map, t_minus_one)
 
 
