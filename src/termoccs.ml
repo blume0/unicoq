@@ -165,7 +165,7 @@ and to_constr_branches bl =
 
 let compare t t' =
   if t.hash = t'.hash then (* in the case of a collision, check equality *)
-    Constr.compare (to_constr t) (to_constr t')
+    Termops.ConstrData.compare (to_constr t) (to_constr t')
   else t.hash - t'.hash
 
 module Order = struct

@@ -33,7 +33,7 @@ let crd_of_tuple (x,y,z) = match y with
 
 (** {2 Options for unification} *)
 
-(** {3 Enabling Unicoq (implementation at the end) *)
+(** {3 Enabling Unicoq (implementation at the end)} *)
 let munify_on = ref false
 
 (** {3 Debugging} *)
@@ -721,10 +721,13 @@ let rec prune sigma (ev, plist) =
   if Evd.is_defined sigma ev then sigma
   else
   let evi = Evd.find_undefined sigma ev in
-  let env = Evd.evar_filtered_context evi in
-  let env' = remove sigma env plist in
-  let env_val' = (List.fold_right push_named_context_val env'
-                    Environ.empty_named_context_val) in
+  let env = Evd.evar_filtered_hyps evi in
+  let env' = remove sigma (EConstr.named_context_of_val env) plist in
+  let env_val' = (List.fold_right (fun d acc ->
+      push_named_context_val (Environ.var_status_ctxt (CND.get_id d) env) d acc)
+      env'
+      Environ.empty_named_context_val)
+  in
   (* the type of the evar may contain an evar depending on the some of
      the vars that we want to prune, so we need to prune that
      as well *)
@@ -814,8 +817,8 @@ exception ProjectionNotFound
 let check_conv_record env sigma (t1,l1) (t2,l2) =
   try
     let (proji,_inst), l1 = try
-        Termops.global_of_constr sigma t1, l1
-      with Not_found ->
+        EConstr.destRef sigma t1, l1
+      with Constr.DestKO ->
         let t1, _, r1 = try destProj sigma t1 with Constr.DestKO -> raise Not_found in
         let app = Retyping.expand_projection env sigma t1 r1 l1 in
         let t1, l1 = destApp sigma app in
@@ -834,9 +837,9 @@ let check_conv_record env sigma (t1,l1) (t2,l2) =
               CanonicalSolution.find env sigma
                 (proji, Sort_cs (ESorts.quality_or_set sigma s)),[]
           | _ ->
-              let c2,_ = Termops.global_of_constr sigma t2 in
+              let c2,_ = EConstr.destRef sigma t2 in
               CanonicalSolution.find env sigma (proji, Const_cs c2),l2
-      with Not_found ->
+      with Not_found | Constr.DestKO ->
         CanonicalSolution.find env sigma (proji, Default_cs),[]
     in
     let open CanonicalSolution in
@@ -936,7 +939,7 @@ module type Unifier = sig
            Evd.evar_map -> ES.unification_result
 end
 
-module type UnifT = functor (P : Params) -> Unifier
+module type UnifT = functor (_ : Params) -> Unifier
 
 (** Side module for instnatiation of evars. In certain cases we need
     to call it with specific parameters, and this is why it is not
@@ -986,7 +989,7 @@ module Inst = functor (U : Unifier) -> struct
 	      (* Type(i) <= X -> X := Type j, i <= j *)
 	      Some (dir == Original)
 	   else None)
-	    (EConstr.push_named_context nc env) sigma t' in
+            env sigma t' in
       let t'' = instantiate_evar sigma nc t' subsl in
       (* XXX: EConstr.API *)
       let ty = Evd.existential_type sigma (ev,subs) in
@@ -1050,7 +1053,7 @@ let ev_compare_heads env nparams1 t1 t2 (dbg, sigma) : unif =
 let tbl = Hashtbl.create 1000
 
 (** The main module *)
-let rec unif (module P : Params) : (module Unifier) = (
+let rec unif : (module Params) -> (module Unifier) = fun (module P) -> (
 module struct
 
   (** If evar e can be instantiated:
@@ -1326,10 +1329,8 @@ module struct
             in
             report (dbg, ES.Success sigma1)
           with UGraph.UniverseInconsistency e ->
-            let prq = Termops.pr_evd_qvar sigma0
-            and prl = Termops.pr_evd_level sigma0 in
-	    debug_str (Printf.sprintf "Type-Same exception: %s"
-                  (Pp.string_of_ppcmds (UGraph.explain_universe_inconsistency prq prl e))) 0;
+            debug_str (Printf.sprintf "Type-Same exception: %s"
+                  (Pp.string_of_ppcmds (UGraph.explain_universe_inconsistency (Evd.sort_printer sigma0) e))) 0;
           report (dbg, ES.UnifFailure (sigma0, PE.NotSameHead))
         end
 
@@ -1362,7 +1363,7 @@ module struct
       rigid_same sigma0
     | Var id1, Var id2 when Id.equal id1 id2 ->
       rigid_same sigma0
-    | Const (c1,_), Const (c2,_) when Constant.equal c1 c2 ->
+    | Const (c1,_), Const (c2,_) when Environ.QConstant.equal env c1 c2 ->
       report (
         log_eq env "Rigid-Same" conv_t c c' (dbg, sigma0) &&=
         ev_compare_heads env nparams c c')
@@ -1375,7 +1376,7 @@ module struct
         log_eq env "Rigid-Same" conv_t c c' (dbg, sigma0) &&=
         ev_compare_heads env nparams c c')
 
-    | Proj (c1, _, t1), Proj (c2, _, t2) when Names.Projection.repr_equal c1 c2 ->
+    | Proj (c1, _, t1), Proj (c2, _, t2) when Environ.QProjection.Repr.equal env (Projection.repr c1) (Projection.repr c2) ->
       report (
         log_eq env "Proj-Same" conv_t c c' (dbg, sigma0) &&=
         unify_constr env t1 t2)
@@ -1706,12 +1707,12 @@ module struct
 
   (* unifies ty with a product type from {name : a} to some Type *)
   and check_product dbg env sigma ty (name, a) =
-    let nc = EConstr.named_context env in
+    let nc = Environ.named_context_val env in
     let naid = Namegen.next_name_away name (Termops.vars_of_env env) in
-    let nc' = CND.of_tuple (Context.make_annot naid ERelevance.relevant, None, a) :: nc in
+    let nc' = EConstr.push_named_context_val ProofVar (CND.of_tuple (Context.make_annot naid ERelevance.relevant, None, a)) nc in
     let sigma', univ = Evd.new_sort_variable Evd.univ_flexible sigma in
-    let sigma'',v = Evarutil.new_pure_evar ~typeclass_candidate:false (EConstr.val_of_named_context nc') sigma' ~relevance:ERelevance.relevant (EConstr.mkSort univ) in
-    let idsubst = (mkRel 1 :: id_substitution nc) in
+    let sigma'',v = Evarutil.new_pure_evar ~typeclass_candidate:false nc' sigma' ~relevance:ERelevance.relevant (EConstr.mkSort univ) in
+    let idsubst = (mkRel 1 :: id_substitution (Environ.named_context_of_val nc)) in
     unify_constr ~conv_t:C.CUMUL env ty
       (mkProd (Context.make_annot (Names.Name naid) ERelevance.relevant, a, mkLEvar sigma'' (v, idsubst)))
       (dbg, sigma'')

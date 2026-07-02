@@ -21,7 +21,7 @@ let fail() = None
 
 module X = struct
       type t = C.constr
-      let compare = C.compare
+      let compare = Termops.ConstrData.compare
 end
 module TMap = CMap.Make(X)
 
@@ -323,7 +323,7 @@ let invert env prune_map sigma ctx t subs args x =
                 (fun (x, vs) ->
                    let id = match Evd.evar_ident x sigma with
                                | None -> str"?UNK"
-                               | Some i -> Names.Id.print i
+                               | Some i -> Names.Id.print (Libnames.basename i)
                    in
                    id++str"("++prlist_with_sep (fun()->str", ") int vs++str")"
                 ) l
