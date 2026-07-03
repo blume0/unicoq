@@ -1649,7 +1649,12 @@ let instantiate ?(conv_t=C.CONV) ?(options=default_options) env
 
 let use_munify () = !munify_on
 let set_use_munify b =
-  if b then try Evarconv.set_evar_conv unify_new with _ -> ();
+  (* Hack: access to legacy evar_conv_x through evar_unify
+     Ideally, we would have an Evarconv.get_evar_env *)
+  let legacy_evar_conv flags = Evarconv.evar_unify flags TermUnification in
+  let _ = if b then Evarconv.set_evar_conv unify_new
+          else Evarconv.set_evar_conv legacy_evar_conv
+  in
   munify_on := b
 
 let _ = Goptions.declare_bool_option {
