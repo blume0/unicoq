@@ -14,6 +14,20 @@
 open EConstr
 module C = Constr
 module CND = Context.Named.Declaration
+module T = Pretyping
+
+
+
+let rec pretyping_debug_hook sigma c t =
+  T.pretyping_debug_hook := (fun _ _ _ -> ());
+  let cp = Printer.pr_econstr_env Environ.empty_env sigma c in
+  let cp' = Printer.pr_econstr_env Environ.empty_env sigma t in
+  Format.printf "BLUME ELABORATED: %a ::: %a @. WITH SHELF:%a@."
+    Pp.pp_with cp Pp.pp_with cp'
+    Pp.pp_with @@ Evd.pr_shelf sigma;
+  T.pretyping_debug_hook := pretyping_debug_hook
+
+let _ = T.pretyping_debug_hook := pretyping_debug_hook
 
 let (let*) = Option.bind
 let return x = Some x
