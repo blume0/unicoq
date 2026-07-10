@@ -658,6 +658,44 @@ let fill_lambdas_invert_types map env sigma nc body subst args ev =
   >>= fun (_, bdy) -> return (!rmap, bdy)
 
 exception ProjectionNotFound
+
+let decompose_proj ?metas env sigma (t1, l1) =
+   (* I only recognize ConstRef projections since these are the only ones for which
+      I know how to obtain the number of parameters. *)
+  let (proji, u), arg =
+    match Termops.global_app_of_constr env sigma t1 with
+    | (Names.GlobRef.ConstRef proji, u), arg -> (proji, u), arg
+    | _ -> raise Not_found
+    | exception _ -> raise Not_found in
+  (* Given a ConstRef projection, I obtain the structure it is a projection from. *)
+  let structure = try Structures.Structure.find_from_projection env proji
+    with _ -> raise Not_found in
+  (* Knowing the structure and hence its number of arguments, I can cut l1 into pieces. *)
+  let params1, c1, extra_args1 =
+    match arg with
+    | Some c -> (* A primitive projection applied to c *)
+      let meta_type mv = match metas with
+      | None -> None
+      | Some metas -> metas mv
+      in
+      let ty =
+        try Retyping.get_type_of ~metas:meta_type ~lax:true env sigma c with
+        | Retyping.RetypeError _ -> raise Not_found
+      in
+      let ind_args =
+        try
+          Some (Inductiveops.find_mrectype env sigma ty |> snd)
+        with Not_found -> None
+      in
+      (match ind_args with Some l -> l | None -> []), c, l1
+    | None ->
+      match CList.chop structure.nparams l1 with
+      | params1, c1 :: extra_args1 -> params1, c1, extra_args1
+      | _ | exception _ -> raise Not_found
+  in
+  ((proji, u), (params1, c1, extra_args1))
+
+
 (* [check_conv_record (t1,l1) (t2,l2)] tries to decompose the problem
    (t1 l1) = (t2 l2) into a problem
 
@@ -680,38 +718,22 @@ exception ProjectionNotFound
 
 let check_conv_record env sigma (t1,l1) (t2,l2) =
   try
-    let (proji,_inst), l1 = try
-        EConstr.destRef sigma t1, l1
-      with Constr.DestKO ->
-        let t1, _, r1 = try destProj sigma t1 with Constr.DestKO -> raise Not_found in
-        let app = Retyping.expand_projection env sigma t1 r1 l1 in
-        let t1, l1 = destApp sigma app in
-        let c1, inst = destConst sigma t1 in
-        let gr1 = GlobRef.ConstRef c1 in
-        (gr1, inst), Array.to_list l1
-    in
+    let ((proji, _), (params1, c1, extra_args1)) = decompose_proj env sigma (t1, l1) in
+    let t2, l2' = decompose_app_list sigma t2 in
+    let l2 = l2' @ l2 in
+    let n_usedargs = List.length l2 - List.length extra_args1 in
+    let l2_usedargs, l2_extra_args =
+      try CList.chop n_usedargs l2 with _ -> raise Not_found in
+    let (pat, _, usedargs') = try ValuePattern.of_constr sigma t2
+                              with _ -> raise Not_found in
     let (sigma, solution), l2_effective =
-      try
-        let open ValuePattern in
-        match kind sigma t2 with
-            Prod (_,a,b) -> (* assert (l2=[]); *)
-                    if Termops.dependent sigma (mkRel 1) b then raise Not_found
-              else CanonicalSolution.find env sigma (proji, Prod_cs),[a;Termops.pop b]
-          | Sort s ->
-              CanonicalSolution.find env sigma
-                (proji, Sort_cs (ESorts.quality_or_set sigma s)),[]
-          | _ ->
-              let c2,_ = EConstr.destRef sigma t2 in
-              CanonicalSolution.find env sigma (proji, Const_cs c2),l2
-      with Not_found | Constr.DestKO ->
-        CanonicalSolution.find env sigma (proji, Default_cs),[]
+      let () = if pat = Default_cs then raise Not_found in (* WA: weird... *)
+      let (sigma, solution) = CanonicalSolution.find env sigma (Names.GlobRef.ConstRef proji, pat) in
+      if List.length solution.cvalue_arguments = n_usedargs + (List.length usedargs') then (sigma, solution), usedargs' @ l2_usedargs
+      else raise Not_found
     in
     let open CanonicalSolution in
-    let params1, c1, extra_args1 =
-      match CList.chop solution.nparams l1 with
-      | params1, c1::extra_args1 -> params1, c1, extra_args1
-      | _ -> raise Not_found in
-    let us2,extra_args2 = CList.chop (List.length solution.cvalue_arguments) l2_effective in
+    let us2,extra_args2 = l2_effective, l2_extra_args in
     sigma,solution.constant,solution.abstractions_ty,(solution.params,params1),(solution.cvalue_arguments,us2),(extra_args1,extra_args2),c1,
     (solution.cvalue_abstraction,applist(t2,l2))
   with Failure _ | Not_found ->
@@ -1066,7 +1088,7 @@ module struct
     else
       (dbg, ES.UnifFailure (sigma, PE.NotSameHead))
 
-  and conv_record dbg env evd t t' =
+  and conv_record dbg env evd (t : _ * _ list) (t' : _ * _ list) =
     let (evd,c,bs,(params,params1),(us,us2),(ts,ts1),c1,(n,t2)) = check_conv_record env evd t t' in
     let (evd',ks,_) =
       List.fold_left
