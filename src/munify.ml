@@ -660,13 +660,12 @@ let fill_lambdas_invert_types map env sigma nc body subst args ev =
 exception ProjectionNotFound
 
 let decompose_proj ?metas env sigma (t1, l1) =
-   (* I only recognize ConstRef projections since these are the only ones for which
-      I know how to obtain the number of parameters. *)
+  Format.printf "TRYING OUT DECOMPOSING PROJ with %a ...@." Pp.pp_with@@
+      Printer.pr_econstr_env env sigma t1;
   let (proji, u), arg =
     match Termops.global_app_of_constr env sigma t1 with
     | (Names.GlobRef.ConstRef proji, u), arg -> (proji, u), arg
-    | _ -> raise Not_found
-    | exception _ -> raise Not_found in
+    | _ | exception _ -> raise Not_found in
   (* Given a ConstRef projection, I obtain the structure it is a projection from. *)
   let structure = try Structures.Structure.find_from_projection env proji
     with _ -> raise Not_found in
@@ -674,20 +673,12 @@ let decompose_proj ?metas env sigma (t1, l1) =
   let params1, c1, extra_args1 =
     match arg with
     | Some c -> (* A primitive projection applied to c *)
-      let meta_type mv = match metas with
-      | None -> None
-      | Some metas -> metas mv
-      in
       let ty =
-        try Retyping.get_type_of ~metas:meta_type ~lax:true env sigma c with
+        try Retyping.get_type_of ?metas ~lax:true env sigma c with
         | Retyping.RetypeError _ -> raise Not_found
       in
-      let ind_args =
-        try
-          Some (Inductiveops.find_mrectype env sigma ty |> snd)
-        with Not_found -> None
-      in
-      (match ind_args with Some l -> l | None -> []), c, l1
+      let ind_args = Inductiveops.find_mrectype env sigma ty |> snd in
+      ind_args, c, l1
     | None ->
       match CList.chop structure.nparams l1 with
       | params1, c1 :: extra_args1 -> params1, c1, extra_args1
@@ -726,16 +717,19 @@ let check_conv_record env sigma (t1,l1) (t2,l2) =
       try CList.chop n_usedargs l2 with _ -> raise Not_found in
     let (pat, _, usedargs') = try ValuePattern.of_constr sigma t2
                               with _ -> raise Not_found in
-    let (sigma, solution), l2_effective =
-      let () = if pat = Default_cs then raise Not_found in (* WA: weird... *)
-      let (sigma, solution) = CanonicalSolution.find env sigma (Names.GlobRef.ConstRef proji, pat) in
-      if List.length solution.cvalue_arguments = n_usedargs + (List.length usedargs') then (sigma, solution), usedargs' @ l2_usedargs
-      else raise Not_found
+    let (sigma, solution), effective_problem, default_problem  =
+      let (sigma, solution) =
+        try CanonicalSolution.find env sigma (Names.GlobRef.ConstRef proji, pat)
+        with Not_found ->
+          CanonicalSolution.find env sigma (Names.GlobRef.ConstRef proji, Default_cs)
+      in
+      if Option.has_some solution.cvalue_abstraction then
+        (sigma, solution), ([],[]), Some (Option.get solution.cvalue_abstraction, solution.cvalue_arguments, applist(t2, l2))
+      else if List.length solution.cvalue_arguments = n_usedargs + (List.length usedargs') then (sigma, solution), (solution.cvalue_arguments, usedargs' @ l2_usedargs), None
+      else (Format.printf "EXACTLY WHERE IT FAILS %a.@.@." Pp.pp_with @@ CanonicalSolution.print env sigma solution;raise Not_found)
     in
     let open CanonicalSolution in
-    let us2,extra_args2 = l2_effective, l2_extra_args in
-    sigma,solution.constant,solution.abstractions_ty,(solution.params,params1),(solution.cvalue_arguments,us2),(extra_args1,extra_args2),c1,
-    (solution.cvalue_abstraction,applist(t2,l2))
+    sigma,solution.constant,solution.abstractions_ty,(solution.params,params1),effective_problem,(extra_args1,l2_extra_args),c1,default_problem
   with Failure _ | Not_found ->
     raise ProjectionNotFound
 
@@ -1089,12 +1083,12 @@ module struct
       (dbg, ES.UnifFailure (sigma, PE.NotSameHead))
 
   and conv_record dbg env evd (t : _ * _ list) (t' : _ * _ list) =
-    let (evd,c,bs,(params,params1),(us,us2),(ts,ts1),c1,(n,t2)) = check_conv_record env evd t t' in
+    let (evd,c,bs,(params,params1),(us,us2),(ts,ts1),c1,default) = check_conv_record env evd t t' in
     let (evd',ks,_) =
       List.fold_left
         (fun (i,ks,m) b ->
-	   match n with
-           | Some n when m = n -> (i,t2::ks, m-1)
+	   match default with
+           | Some (n, nargs, t2) when m = n && 0 = 1-> (i,t2::ks, m-1)
            | _ ->
              let dloc = Loc.tag @@ Evar_kinds.InternalHole in
              let sigma = i in
@@ -1106,6 +1100,16 @@ module struct
       log_eq_spine env "CS" C.CONV t t' (dbg, evd') &&=
       ise_list2 (fun x1 x -> unify_constr env x1 (substl ks x)) params1 params &&=
       ise_list2 (fun u1 u -> unify_constr env u1 (substl ks u)) us2 us &&=
+      begin fun (a, sigma) -> match default with
+      | Some (n, nargs, t2) ->
+         let vj = CList.(applist (nth ks (n-1), (map (fun t -> substl ks t) nargs))) in
+         let _ = Format.printf "UNIFYING THE DEFAULT: %a = %a@."
+                   Pp.pp_with (Printer.pr_econstr_env env sigma t2)
+                   Pp.pp_with (Printer.pr_econstr_env env sigma vj) 
+         in
+         unify_constr env t2 vj (a, sigma)
+      | None -> (a, ES.Success sigma)
+      end &&=
       unify' env (decompose_app_list evd' c1) (c,(List.rev ks)) &&=
       ise_list2 (unify_constr env) ts ts1)
 
