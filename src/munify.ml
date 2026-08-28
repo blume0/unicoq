@@ -232,8 +232,6 @@ let report (l, s) =
   | ES.Success sigma -> success (l, sigma)
   | ES.UnifFailure (sigma, _) -> err (l, sigma)
 
-let is_success s = match s with ES.Success _ -> true | _ -> false
-
 (** {3 Monadic style operations for the unif type} *)
 let (&&=) (l, s as opt) f =
   match s with
@@ -983,7 +981,7 @@ module struct
               ||= cont conv_t env t t' sigma
             end
         in
-        if not (is_success (snd res)) && use_hash () then
+        if not (ES.is_success (snd res)) && use_hash () then
           Hashtbl.add tbl (sigma, env, t, t') true;
         res
 
@@ -1096,7 +1094,7 @@ module struct
           in
           let rule = if b then "Meta-Same" else "Meta-Same-Same" in
           log_eq_spine env rule conv_t t t' (dbg, sigma) &&= fun (dbg, sigma) ->
-            if is_success (snd p) then
+            if ES.is_success (snd p) then
               report (ise_list2 (unify_constr env) l l' (dbg, sigma))
             else
               report (dbg, ES.UnifFailure (sigma, PE.NotSameHead))
