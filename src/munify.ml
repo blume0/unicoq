@@ -27,10 +27,6 @@ module CND = Context.Named.Declaration
 module CRD = Context.Rel.Declaration
 module PE = Pretype_errors
 
-let crd_of_tuple (x,y,z) = match y with
-  | Some y -> CRD.LocalDef(x,y,z)
-  | None   -> CRD.LocalAssum(x,z)
-
 (** {2 Options for unification} *)
 
 (** {3 Enabling Unicoq (implementation at the end)} *)
@@ -1199,7 +1195,7 @@ module struct
 
     (* Lam-Same *)
     | Lambda (name, t1, c1), Lambda (_, t2, c2) ->
-      let env' = EConstr.push_rel (crd_of_tuple (name, None, t1)) env in
+      let env' = EConstr.push_rel (CRD.of_tuple (name, None, t1)) env in
       report (
         log_eq env "Lam-Same" conv_t c c' (dbg, sigma0) &&=
         unify_constr env t1 t2 &&=
@@ -1210,12 +1206,12 @@ module struct
       report (
         log_eq env "Prod-Same" conv_t c c' (dbg, sigma0) &&=
         unify_constr env t1 t2 &&=
-        let env = EConstr.push_rel (crd_of_tuple (name,None,t1)) env in
+        let env = EConstr.push_rel (CRD.of_tuple (name,None,t1)) env in
         unify_constr ~conv_t env c1 c2)
 
     | LetIn (name, trm1, ty1, body1), LetIn (_, trm2, ty2, body2) ->
       (* Let-Same *)
-      let env' = EConstr.push_rel (crd_of_tuple (name, Some trm1, ty1)) env in
+      let env' = EConstr.push_rel (CRD.of_tuple (name, Some trm1, ty1)) env in
       report (
         log_eq env "Let-Same" conv_t c c' (dbg, sigma0) &&=
         unify_constr env trm1 trm2 &&=
@@ -1573,7 +1569,7 @@ module struct
       (dbg, sigma'')
 
   and eta_match conv_t ?(options=default_options) env (name, a, t1) (th, tl as t) (dbg, sigma0 ) =
-    let env' = EConstr.push_rel (crd_of_tuple (name, None, a)) env in
+    let env' = EConstr.push_rel (CRD.of_tuple (name, None, a)) env in
     let t' = applist (lift 1 th, List.map (lift 1) tl @ [mkRel 1]) in
     let ty = Retyping.get_type_of env sigma0 (applist t) in
     check_product dbg env sigma0 ty (name.binder_name, a) &&=
