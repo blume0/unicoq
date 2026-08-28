@@ -397,7 +397,8 @@ let get_definition sigma env t : EConstr.t =
       | _ -> anomaly (str"get_definition for rel didn't have definition!")
   else if isConst sigma t then
     let c,i = destConst sigma t in
-    of_constr @@ Environ.constant_value_in env (c, EInstance.kind sigma i)
+    EConstr.constant_value_in env sigma
+      (c, EInstance.make (EInstance.kind sigma i))
   else
     anomaly (str"get_definition didn't have definition!")
 
