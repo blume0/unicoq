@@ -541,10 +541,13 @@ let rec prune sigma (ev, plist) =
   let evi = Evd.find_undefined sigma ev in
   let env = Evd.evar_filtered_hyps evi in
   let env' = remove sigma (EConstr.named_context_of_val env) plist in
-  let env_val' = (List.fold_right (fun d acc ->
-      push_named_context_val (Environ.var_status_ctxt (CND.get_id d) env) d acc)
-      env'
-      Environ.empty_named_context_val)
+  let kept =
+    List.fold_left (fun ids d -> Id.Set.add (CND.get_id d) ids) Id.Set.empty env'
+  in
+  let filter =
+    Evd.Filter.apply_subfilter (Evd.evar_filter evi)
+      (List.map (fun d -> Id.Set.mem (CND.get_id d) kept)
+         (EConstr.named_context_of_val env))
   in
   (* the type of the evar may contain an evar depending on the some of
      the vars that we want to prune, so we need to prune that
@@ -555,10 +558,7 @@ let rec prune sigma (ev, plist) =
       None -> raise CannotPrune
     | Some (m, concl) ->
       let sigma = prune_all m sigma in
-      let concl = Evd.evar_concl evi in
-      let typeclass_candidate = Evd.is_typeclass_evar sigma ev in
-      let sigma, ev' = EU.new_pure_evar ~typeclass_candidate env_val' sigma ~relevance:(Evd.evar_relevance evi) concl in
-      Evd.define ev (mkLEvar sigma (ev', id_env')) sigma
+      fst (Evd.restrict ev filter sigma)
 
 and prune_all map sigma =
   List.fold_left prune sigma (Evar.Map.bindings map)
