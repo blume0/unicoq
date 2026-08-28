@@ -1524,9 +1524,9 @@ module struct
     let nc' = EConstr.push_named_context_val ProofVar (CND.of_tuple (Context.make_annot naid ERelevance.relevant, None, a)) nc in
     let sigma', univ = Evd.new_sort_variable Evd.univ_flexible sigma in
     let sigma'',v = Evarutil.new_pure_evar ~typeclass_candidate:false nc' sigma' ~relevance:ERelevance.relevant (EConstr.mkSort univ) in
-    let idsubst = (mkRel 1 :: id_substitution (Environ.named_context_of_val nc)) in
+    let idsubst = SList.cons (mkRel 1) (EConstr.identity_subst_val nc) in
     unify_constr ~conv_t:C.CUMUL env ty
-      (mkProd (Context.make_annot (Names.Name naid) ERelevance.relevant, a, mkLEvar sigma'' (v, idsubst)))
+      (mkProd (Context.make_annot (Names.Name naid) ERelevance.relevant, a, mkEvar (v, idsubst)))
       (dbg, sigma'')
 
   and eta_match conv_t ?(options=default_options) env (name, a, t1) (th, tl as t) (dbg, sigma0 ) =
