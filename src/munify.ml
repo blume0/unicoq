@@ -708,7 +708,7 @@ let evar_apprec ts env sigma (c, stack) =
   in aux (c, RO.Stack.append_app_list stack RO.Stack.empty)
 
 let eq_app_stack sigma (c, l) (c', l') =
-  eq_constr sigma c c' && List.for_all2 (eq_constr sigma) l l'
+  eq_constr sigma c c' && CList.for_all2eq (eq_constr sigma) l l'
 
 let remove_non_var env sigma (ev, subs as evsubs) args =
   let subs = Array.of_list subs in
