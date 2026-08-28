@@ -178,23 +178,6 @@ let get_stats () = {
 }
 
 
-(** {2 Functions borrowed from Coq 8.4 and not found in 8.5} *)
-(* Note: let-in contributes to the instance *)
-let make_evar_instance sigma sign args =
-  let rec instrec = function
-    | def :: sign, c::args when isVarId sigma (CND.get_id def) c -> instrec (sign,args)
-    | def :: sign, c::args -> (CND.get_id def,c) :: instrec (sign,args)
-    | [],[] -> []
-    | [],_ | _,[] -> anomaly (str"Signature and its instance do not match")
-  in
-  instrec (sign,args)
-
-let instantiate_evar sigma sign c args =
-  let inst = make_evar_instance sigma sign args in
-  if inst = [] then c else replace_vars sigma inst c
-(** Not in 8.5 *)
-
-
 (** {2 Generic utility functions} *)
 let _array_mem_from_i e i a =
   let j = ref i in
@@ -849,8 +832,10 @@ module Inst = functor (U : Unifier) -> struct
 	      Some (dir == Original)
 	   else None)
             env sigma t' in
-      let t'' = instantiate_evar sigma nc t' subsl in
-      (* XXX: EConstr.API *)
+      let evi = Evd.find_undefined sigma ev in
+      let t'' =
+        Evd.instantiate_evar_array sigma evi t' (SList.of_full_list subsl)
+      in
       let ty = Evd.existential_type sigma (ev,subs) in
       let unifty =
 	try
