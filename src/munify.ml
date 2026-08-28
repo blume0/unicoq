@@ -179,18 +179,6 @@ let get_stats () = {
 
 
 (** {2 Generic utility functions} *)
-let _array_mem_from_i e i a =
-  let j = ref i in
-  let length = Array.length a in
-  let b = ref false in
-  while !j < length && not !b do
-    if a.(!j) = e then
-      b := true
-    else
-      j := !j+1
-  done;
-  !b
-
 let array_mem_to_i e i a =
   let j = ref 0 in
   let b = ref false in
@@ -345,17 +333,6 @@ let is_lift env sigma c =
 (** Given a named_context returns a list with its variables *)
 let id_substitution nc =
   List.fold_right (fun d s -> mkVar (CND.get_id d) :: s) nc []
-
-(** Pre: isVar v1 *)
-let _is_same_var sigma v1 v2 = isVar sigma v2 && (destVar sigma v1 = destVar sigma v2)
-
-(** Pre: isRel v1 *)
-let _is_same_rel sigma v1 v2 = isRel sigma v2 && destRel sigma v1 = destRel sigma v2
-
-let _is_same_evar sigma i1 ev2 =
-  match kind sigma ev2 with
-  | Evar (i2, _) -> i1 = i2
-  | _ -> false
 
 let isVarOrRel sigma c = isVar sigma c || isRel sigma c
 
