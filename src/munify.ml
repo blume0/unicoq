@@ -313,36 +313,7 @@ let get_stats () = {
 }
 
 
-(** {2 Functions borrowed from Coq 8.4 and not found in 8.5} *)
-(* Note: let-in contributes to the instance *)
-let make_evar_instance sigma sign args =
-  let rec instrec = function
-    | def :: sign, c::args when isVarId sigma (CND.get_id def) c -> instrec (sign,args)
-    | def :: sign, c::args -> (CND.get_id def,c) :: instrec (sign,args)
-    | [],[] -> []
-    | [],_ | _,[] -> anomaly (str"Signature and its instance do not match")
-  in
-  instrec (sign,args)
-
-let instantiate_evar sigma sign c args =
-  let inst = make_evar_instance sigma sign args in
-  if inst = [] then c else replace_vars sigma inst c
-(** Not in 8.5 *)
-
-
 (** {2 Generic utility functions} *)
-let _array_mem_from_i e i a =
-  let j = ref i in
-  let length = Array.length a in
-  let b = ref false in
-  while !j < length && not !b do
-    if a.(!j) = e then
-      b := true
-    else
-      j := !j+1
-  done;
-  !b
-
 let array_mem_to_i e i a =
   let j = ref 0 in
   let b = ref false in
@@ -383,8 +354,6 @@ let report (l, s) =
   match s with
   | ES.Success sigma -> success (l, sigma)
   | ES.UnifFailure (sigma, _) -> err (l, sigma)
-
-let is_success s = match s with ES.Success _ -> true | _ -> false
 
 (** {3 Monadic style operations for the unif type} *)
 let (&&=) (l, s as opt) f =
@@ -500,17 +469,6 @@ let is_lift env sigma c =
 let id_substitution nc =
   List.map (fun d -> mkVar (CND.get_id d)) nc
 
-(** Pre: isVar v1 *)
-let _is_same_var sigma v1 v2 = isVar sigma v2 && (destVar sigma v1 = destVar sigma v2)
-
-(** Pre: isRel v1 *)
-let _is_same_rel sigma v1 v2 = isRel sigma v2 && destRel sigma v1 = destRel sigma v2
-
-let _is_same_evar sigma i1 ev2 =
-  match kind sigma ev2 with
-  | Evar (i2, _) -> i1 = i2
-  | _ -> false
-
 let isVarOrRel sigma c = isVar sigma c || isRel sigma c
 
 (* BLUME: this is the part that checks if the arguments are HOPU compliant *)
@@ -575,7 +533,8 @@ let get_definition sigma env t : EConstr.t =
       | _ -> anomaly (str"get_definition for rel didn't have definition!")
   else if isConst sigma t then
     let c,i = destConst sigma t in
-    of_constr @@ Environ.constant_value_in env (c, EInstance.kind sigma i)
+    EConstr.constant_value_in env sigma
+      (c, EInstance.make (EInstance.kind sigma i))
   else
     anomaly (str"get_definition didn't have definition!")
 
@@ -723,10 +682,13 @@ let rec prune sigma (ev, plist) =
   let evi = Evd.find_undefined sigma ev in
   let env = Evd.evar_filtered_hyps evi in
   let env' = remove sigma (EConstr.named_context_of_val env) plist in
-  let env_val' = (List.fold_right (fun d acc ->
-      push_named_context_val (Environ.var_status_ctxt (CND.get_id d) env) d acc)
-      env'
-      Environ.empty_named_context_val)
+  let kept =
+    List.fold_left (fun ids d -> Id.Set.add (CND.get_id d) ids) Id.Set.empty env'
+  in
+  let filter =
+    Evd.Filter.apply_subfilter (Evd.evar_filter evi)
+      (List.map (fun d -> Id.Set.mem (CND.get_id d) kept)
+         (EConstr.named_context_of_val env))
   in
   (* the type of the evar may contain an evar depending on the some of
      the vars that we want to prune, so we need to prune that
@@ -737,10 +699,7 @@ let rec prune sigma (ev, plist) =
       None -> raise CannotPrune
     | Some (m, concl) ->
       let sigma = prune_all m sigma in
-      let concl = Evd.evar_concl evi in
-      let typeclass_candidate = Evd.is_typeclass_evar sigma ev in
-      let sigma, ev' = EU.new_pure_evar ~typeclass_candidate env_val' sigma ~relevance:(Evd.evar_relevance evi) concl in
-      Evd.define ev (mkLEvar sigma (ev', id_env')) sigma
+      fst (Evd.restrict ev filter sigma)
 
 and prune_all map sigma =
   List.fold_left prune sigma (Evar.Map.bindings map)
@@ -867,7 +826,7 @@ let evar_apprec ts env sigma (c, stack) =
   in aux (c, RO.Stack.append_app_list stack RO.Stack.empty)
 
 let eq_app_stack sigma (c, l) (c', l') =
-  eq_constr sigma c c' && List.for_all2 (eq_constr sigma) l l'
+  eq_constr sigma c c' && CList.for_all2eq (eq_constr sigma) l l'
 
 let remove_non_var env sigma (ev, subs as evsubs) args =
   let subs = Array.of_list subs in
@@ -990,8 +949,10 @@ module Inst = functor (U : Unifier) -> struct
 	      Some (dir == Original)
 	   else None)
             env sigma t' in
-      let t'' = instantiate_evar sigma nc t' subsl in
-      (* XXX: EConstr.API *)
+      let evi = Evd.find_undefined sigma ev in
+      let t'' =
+        Evd.instantiate_evar_array sigma evi t' (SList.of_full_list subsl)
+      in
       let ty = Evd.existential_type sigma (ev,subs) in
       let unifty =
 	try
@@ -1139,7 +1100,7 @@ module struct
               ||= cont conv_t env t t' sigma
             end
         in
-        if not (is_success (snd res)) && use_hash () then
+        if not (ES.is_success (snd res)) && use_hash () then
           Hashtbl.add tbl (sigma, env, t, t') true;
         res
 
@@ -1252,7 +1213,7 @@ module struct
           in
           let rule = if b then "Meta-Same" else "Meta-Same-Same" in
           log_eq_spine env rule conv_t t t' (dbg, sigma) &&= fun (dbg, sigma) ->
-            if is_success (snd p) then
+            if ES.is_success (snd p) then
               report (ise_list2 (unify_constr env) l l' (dbg, sigma))
             else
               report (dbg, ES.UnifFailure (sigma, PE.NotSameHead))
@@ -1712,9 +1673,9 @@ module struct
     let nc' = EConstr.push_named_context_val ProofVar (CND.of_tuple (Context.make_annot naid ERelevance.relevant, None, a)) nc in
     let sigma', univ = Evd.new_sort_variable Evd.univ_flexible sigma in
     let sigma'',v = Evarutil.new_pure_evar ~typeclass_candidate:false nc' sigma' ~relevance:ERelevance.relevant (EConstr.mkSort univ) in
-    let idsubst = (mkRel 1 :: id_substitution (Environ.named_context_of_val nc)) in
+    let idsubst = SList.cons (mkRel 1) (EConstr.identity_subst_val nc) in
     unify_constr ~conv_t:C.CUMUL env ty
-      (mkProd (Context.make_annot (Names.Name naid) ERelevance.relevant, a, mkLEvar sigma'' (v, idsubst)))
+      (mkProd (Context.make_annot (Names.Name naid) ERelevance.relevant, a, mkEvar (v, idsubst)))
       (dbg, sigma'')
 
   and eta_match conv_t ?(options=default_options) env (name, a, t1) (th, tl as t) (dbg, sigma0 ) =
@@ -1816,7 +1777,12 @@ let instantiate ?(conv_t=C.CONV) ?(options=default_options) env
 
 let use_munify () = !munify_on
 let set_use_munify b =
-  if b then try Evarconv.set_evar_conv unify_new with _ -> ();
+  (* Hack: access to legacy evar_conv_x through evar_unify
+     Ideally, we would have an Evarconv.get_evar_env *)
+  let legacy_evar_conv flags = Evarconv.evar_unify flags TermUnification in
+  let _ = if b then Evarconv.set_evar_conv unify_new
+          else Evarconv.set_evar_conv legacy_evar_conv
+  in
   munify_on := b
 
 let _ = Goptions.declare_bool_option {
