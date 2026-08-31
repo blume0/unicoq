@@ -2,25 +2,25 @@
 
 ![Unicoq logo](/doc/unicoq-small.png?raw=true)
 
-An enhanced unification algorithm for Coq
+An enhanced unification algorithm for Rocq
 
-Copyright (c) 2015--2021
-	Beta Ziliani <beta@manas.tech>,
-    Matthieu Sozeau <mattam@mattam.org>
+Copyright (c) 2015--2026
+  Beta Ziliani <beta.ziliani@gmail.com>,
+  Jan-Oliver Kaiser <mail@janno-kaiser.de>,
+  Matthieu Sozeau <mattam@mattam.org>
 
 Distributed under the terms of the MIT License,
 see LICENSE for details.
 
-This archive contains a new unification algorithm for Coq, as
+This archive contains a different unification algorithm for Rocq, as
 a plugin that replaces the existing unification algorithm. This
 algorithm is described in detail in
-[A Unification Algorithm for Coq Featuring Universe Polymorphism
-and Overloading](http://www.mpi-sws.org/~beta/#publications).
+[A comprehensible guide to a new unifier for CIC including universe polymorphism and overloading](https://doi.org/10.1017/S0956796817000028).
 
 The archive has 3 subdirectories:
 * `src` contains the code of the plugin in `munify.ml`.
 
-* `theories` contains support Coq files for the plugin.
+* `theories` contains support Rocq files for the plugin.
   `Unicoq.v` declares the plugin on the Coq side.
 
 * `test-suite` just tests and demonstrates the use of the plugin
@@ -28,29 +28,30 @@ The archive has 3 subdirectories:
 Installation
 ============
 
-The plugin works currently with Coq master, although there are releases
+The plugin works currently with Rocq master, although there are releases
 for previous versions as well. Through OPAM, this plugin is available
-in the [Coq's repository](http://coq.io/opam/):
+in [Rocq's repository](https://rocq-prover.org/opam/released):
 ```
-opam repo add coq-released https://coq.inria.fr/opam/released
+opam repo add rocq-released https://rocq-prover.org/opam/released
 opam install coq-unicoq
 ```
-Otherwise, you should have coqc, ocamlc and make in your path.
+Otherwise, you should have rocq, ocamlc and make in your path.
 Then simply do:
 ```
-coq_makefile -f _CoqProject -o Makefile
+rocq makefile -f _CoqProject -o Makefile
 ```
-To generate a makefile from the description in Make, then `make`.
+To generate a makefile from the `_CoqProject` file, then `make`.
 This will consecutively build the plugin, the supporting
 theories and the test-suite file.
 
 You can then either `make install` the plugin or leave it in its
 current directory. To be able to import it from anywhere in Coq,
-simply add the following to `~/.coqrc`:
+simply add the following to `~/.rocqrc`:
 ```
 Add LoadPath "path_to_unicoq/theories" as Unicoq.
 Add ML Path "path_to_unicoq/src".
 ```
+
 # Usage
 
 Once installed, you can `Require Import Unicoq.Unicoq` to load the
