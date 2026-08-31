@@ -5,8 +5,8 @@
 An enhanced unification algorithm for Rocq
 
 Copyright (c) 2015--2026
-	Beta Ziliani <beta.ziliani@gmail.com>,
-  Jan-Oliver Kaiser <mail@janno-kaiser.de>
+  Beta Ziliani <beta.ziliani@gmail.com>,
+  Jan-Oliver Kaiser <mail@janno-kaiser.de>,
   Matthieu Sozeau <mattam@mattam.org>
 
 Distributed under the terms of the MIT License,
