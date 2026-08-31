@@ -22,8 +22,7 @@ Set Unicoq Super Aggressive.  (* Needs super aggressive option *)
 Definition test3 : (_ : nat -> nat) 0 = 0 := eq_refl.
 
 Unset Use Unicoq.
-(* fails in std coq unif, although the Unset Use Unicoq option is not working*)
-Definition test4 : (_ : nat -> nat) 0 = 0 := eq_refl.
+Fail Definition test4 : (_ : nat -> nat) 0 = 0 := eq_refl.
 Set Use Unicoq.
 
 Unset Unicoq Super Aggressive.
